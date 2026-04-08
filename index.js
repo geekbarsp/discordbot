@@ -17,7 +17,8 @@ import play from 'play-dl';
 // ─── Config ────────────────────────────────────────────────────────────────────
 
 function readEnv(name, placeholder) {
-  const value = process.env[name]?.trim();
+  const rawValue = process.env[name]?.trim();
+  const value = rawValue?.replace(/^(['"])(.*)\1$/, '$2').trim();
   if (!value || value === placeholder) {
     return null;
   }
