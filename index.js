@@ -170,10 +170,9 @@ function getMusicState(guildId) {
 }
 
 function normalizeYouTubeTrack(video) {
-  const canonicalUrl = video.url
-    || video.watch_url
-    || video.webpage_url
-    || (video.id ? `https://www.youtube.com/watch?v=${video.id}` : null);
+  const canonicalUrl = video.id
+    ? `https://www.youtube.com/watch?v=${video.id}`
+    : (video.url || video.watch_url || video.webpage_url || null);
 
   return {
     title:    video.title || 'Unknown title',
@@ -209,10 +208,9 @@ async function searchYouTubeVideo(query) {
     return null;
   }
 
-  const candidateUrl = firstResult.url
-    || firstResult.watch_url
-    || firstResult.webpage_url
-    || (firstResult.id ? `https://www.youtube.com/watch?v=${firstResult.id}` : null);
+  const candidateUrl = firstResult.id
+    ? `https://www.youtube.com/watch?v=${firstResult.id}`
+    : (firstResult.url || firstResult.watch_url || firstResult.webpage_url || null);
 
   if (!candidateUrl) {
     return firstResult;
@@ -313,10 +311,9 @@ async function playNext(guildId) {
 
     if (!streamUrl || !/^https?:\/\//i.test(streamUrl)) {
       const recoveredVideo = await searchYouTubeVideo(`${nextTrack.title} ${nextTrack.author}`);
-      streamUrl = recoveredVideo?.url
-        || recoveredVideo?.watch_url
-        || recoveredVideo?.webpage_url
-        || (recoveredVideo?.id ? `https://www.youtube.com/watch?v=${recoveredVideo.id}` : null);
+      streamUrl = recoveredVideo?.id
+        ? `https://www.youtube.com/watch?v=${recoveredVideo.id}`
+        : (recoveredVideo?.url || recoveredVideo?.watch_url || recoveredVideo?.webpage_url || null);
     }
 
     if (!streamUrl) {
