@@ -204,7 +204,26 @@ async function searchYouTubeVideo(query) {
     },
   });
 
-  return results[0] ?? null;
+  const firstResult = results[0] ?? null;
+  if (!firstResult) {
+    return null;
+  }
+
+  const candidateUrl = firstResult.url
+    || firstResult.watch_url
+    || firstResult.webpage_url
+    || (firstResult.id ? `https://www.youtube.com/watch?v=${firstResult.id}` : null);
+
+  if (!candidateUrl) {
+    return firstResult;
+  }
+
+  try {
+    const info = await play.video_info(candidateUrl);
+    return info.video_details;
+  } catch {
+    return firstResult;
+  }
 }
 
 async function bridgeSpotifyTrack(track) {
