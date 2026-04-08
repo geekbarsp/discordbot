@@ -27,6 +27,36 @@ function readEnv(name, placeholder) {
   return value;
 }
 
+function parseCookieHeader(cookieHeader) {
+  if (!cookieHeader) {
+    return [];
+  }
+
+  return cookieHeader
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const separatorIndex = part.indexOf('=');
+      if (separatorIndex === -1) {
+        return null;
+      }
+
+      return {
+        domain:         '.youtube.com',
+        path:           '/',
+        secure:         true,
+        httpOnly:       false,
+        hostOnly:       false,
+        sameSite:       'no_restriction',
+        key:            part.slice(0, separatorIndex),
+        name:           part.slice(0, separatorIndex),
+        value:          part.slice(separatorIndex + 1),
+      };
+    })
+    .filter(Boolean);
+}
+
 const DISCORD_TOKEN   = readEnv('DISCORD_TOKEN', 'your-discord-bot-token-here');
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL?.trim() || 'https://api.openai.com/v1';
 const OPENAI_API_KEY  = readEnv('OPENAI_API_KEY', 'your-openai-key-here');
@@ -40,6 +70,7 @@ const YOUTUBE_USER_AGENT    = readEnv(
   'YOUTUBE_USER_AGENT',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
 );
+const YOUTUBE_COOKIES       = parseCookieHeader(YOUTUBE_COOKIE);
 
 if (!DISCORD_TOKEN) {
   console.error('[Config] DISCORD_TOKEN is missing in .env. Add your Discord bot token and restart the bot.');
@@ -333,19 +364,19 @@ async function playNext(guildId) {
         throw streamError;
       }
 
-      const headers = {
-        'user-agent': YOUTUBE_USER_AGENT,
-      };
-
-      if (YOUTUBE_COOKIE) {
-        headers.cookie = YOUTUBE_COOKIE;
-      }
+      const agent = YOUTUBE_COOKIES.length > 0 ? ytdl.createAgent(YOUTUBE_COOKIES) : undefined;
 
       const fallbackStream = ytdl(streamUrl, {
-        filter:         'audioonly',
-        quality:        'highestaudio',
-        highWaterMark:  1 << 25,
-        requestOptions: { headers },
+        filter:        'audioonly',
+        quality:       'highestaudio',
+        highWaterMark: 1 << 25,
+        agent,
+        playerClients: ['WEB', 'WEB_EMBEDDED', 'IOS', 'ANDROID', 'TV'],
+        requestOptions: {
+          headers: {
+            'user-agent': YOUTUBE_USER_AGENT,
+          },
+        },
       });
 
       resource = createAudioResource(fallbackStream, {
