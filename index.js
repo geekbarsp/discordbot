@@ -7,9 +7,26 @@ import OpenAI from 'openai';
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
-const DISCORD_TOKEN   = process.env.DISCORD_TOKEN;
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1';
-const OPENAI_API_KEY  = process.env.OPENAI_API_KEY;
+function readEnv(name, placeholder) {
+  const value = process.env[name]?.trim();
+  if (!value || value === placeholder) {
+    return null;
+  }
+  return value;
+}
+
+const DISCORD_TOKEN   = readEnv('DISCORD_TOKEN', 'your-discord-bot-token-here');
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL?.trim() || 'https://api.openai.com/v1';
+const OPENAI_API_KEY  = readEnv('OPENAI_API_KEY', 'your-openai-key-here');
+
+if (!DISCORD_TOKEN) {
+  console.error('[Config] DISCORD_TOKEN is missing in .env. Add your Discord bot token and restart the bot.');
+  process.exit(1);
+}
+
+if (!OPENAI_API_KEY) {
+  console.warn('[Config] OPENAI_API_KEY is missing in .env. The `link` command will stay disabled until it is set.');
+}
 
 // Guild ID → array of voice channel IDs the bot should permanently occupy.
 const PERMANENT_VOICE_CHANNELS = {
@@ -35,10 +52,12 @@ const client = new Client({
 
 // ─── OpenAI client ──────────────────────────────────────────────────────────────
 
-const openai = new OpenAI({
-  apiKey:  OPENAI_API_KEY,
-  baseURL: OPENAI_BASE_URL,
-});
+const openai = OPENAI_API_KEY
+  ? new OpenAI({
+      apiKey:  OPENAI_API_KEY,
+      baseURL: OPENAI_BASE_URL,
+    })
+  : null;
 
 // ─── discord-player setup ───────────────────────────────────────────────────────
 
@@ -140,6 +159,11 @@ async function joinAllPermanentChannels() {
 // ─── AI chat helper ─────────────────────────────────────────────────────────────
 
 async function handleAIChat(message, prompt) {
+  if (!openai) {
+    await message.reply('❌ `OPENAI_API_KEY` is missing in `.env`, so the `link` command is unavailable right now.');
+    return;
+  }
+
   try {
     await message.channel.sendTyping();
 
@@ -306,4 +330,12 @@ client.on(Events.MessageCreate, async (message) => {
 
 // ─── Login ───────────────────────────────────────────────────────────────────────
 
-client.login(DISCORD_TOKEN);
+try {
+  await client.login(DISCORD_TOKEN);
+} catch (err) {
+  if (err?.code === 'TokenInvalid') {
+    console.error('[Config] Discord rejected DISCORD_TOKEN. Make sure you copied the bot token from the Discord Developer Portal Bot page.');
+    process.exit(1);
+  }
+  throw err;
+}
