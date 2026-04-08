@@ -33,6 +33,11 @@ const SPOTIFY_CLIENT_ID     = readEnv('SPOTIFY_CLIENT_ID', 'your-spotify-client-
 const SPOTIFY_CLIENT_SECRET = readEnv('SPOTIFY_CLIENT_SECRET', 'your-spotify-client-secret-here');
 const SPOTIFY_REFRESH_TOKEN = readEnv('SPOTIFY_REFRESH_TOKEN', 'your-spotify-refresh-token-here');
 const SPOTIFY_MARKET        = process.env.SPOTIFY_MARKET?.trim() || 'US';
+const YOUTUBE_COOKIE        = readEnv('YOUTUBE_COOKIE', 'your-youtube-cookie-here');
+const YOUTUBE_USER_AGENT    = readEnv(
+  'YOUTUBE_USER_AGENT',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+);
 
 if (!DISCORD_TOKEN) {
   console.error('[Config] DISCORD_TOKEN is missing in .env. Add your Discord bot token and restart the bot.');
@@ -45,6 +50,10 @@ if (!OPENAI_API_KEY) {
 
 if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET || !SPOTIFY_REFRESH_TOKEN) {
   console.warn('[Config] Spotify credentials are missing in .env. Spotify links may not resolve until they are added.');
+}
+
+if (!YOUTUBE_COOKIE) {
+  console.warn('[Config] YOUTUBE_COOKIE is missing in .env. YouTube may block playback on cloud hosts.');
 }
 
 // Guild ID → array of voice channel IDs the bot should permanently occupy.
@@ -81,6 +90,17 @@ const openai = OPENAI_API_KEY
 // ─── Music state ────────────────────────────────────────────────────────────────
 
 const musicStates = new Map();
+
+play.setToken({
+  useragent: [YOUTUBE_USER_AGENT],
+  ...(YOUTUBE_COOKIE
+    ? {
+        youtube: {
+          cookie: YOUTUBE_COOKIE,
+        },
+      }
+    : {}),
+});
 
 if (SPOTIFY_CLIENT_ID && SPOTIFY_CLIENT_SECRET && SPOTIFY_REFRESH_TOKEN) {
   await play.setToken({
@@ -279,7 +299,13 @@ async function playNext(guildId) {
     await state.textChannel?.send(`▶️ **Now playing:** ${nextTrack.title}${sourceLabel}`);
   } catch (error) {
     console.error(`[Music] Stream error in guild ${guildId}:`, error.message);
-    await state.textChannel?.send(`❌ Could not play **${nextTrack.title}**: ${error.message}`);
+    if (String(error.message).includes('Sign in to confirm you’re not a bot')) {
+      await state.textChannel?.send(
+        '❌ YouTube blocked this server request. Add `YOUTUBE_COOKIE` in Railway Variables, redeploy, and try again.',
+      );
+    } else {
+      await state.textChannel?.send(`❌ Could not play **${nextTrack.title}**: ${error.message}`);
+    }
     state.currentTrack = null;
     await playNext(guildId);
   }
