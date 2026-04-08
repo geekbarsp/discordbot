@@ -368,7 +368,7 @@ async function playNext(guildId) {
 
       const fallbackStream = ytdl(streamUrl, {
         filter:        'audioonly',
-        quality:       'highestaudio',
+        quality:       'highestaudio[ext=webm]/highestaudio[ext=m4a]/highestaudio/bestaudio',
         highWaterMark: 1 << 25,
         agent,
         playerClients: ['WEB', 'WEB_EMBEDDED', 'IOS', 'ANDROID', 'TV'],
