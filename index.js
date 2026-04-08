@@ -170,9 +170,14 @@ function getMusicState(guildId) {
 }
 
 function normalizeYouTubeTrack(video) {
+  const canonicalUrl = video.url
+    || video.watch_url
+    || video.webpage_url
+    || (video.id ? `https://www.youtube.com/watch?v=${video.id}` : null);
+
   return {
     title:    video.title || 'Unknown title',
-    url:      video.url,
+    url:      canonicalUrl,
     author:   video.channel?.name || video.channel?.url || 'YouTube',
     duration: video.durationInSec ?? 0,
     source:   'YouTube',
@@ -285,7 +290,21 @@ async function playNext(guildId) {
   state.currentTrack = nextTrack;
 
   try {
-    const stream = await play.stream(nextTrack.url);
+    let streamUrl = nextTrack.url;
+
+    if (!streamUrl || !/^https?:\/\//i.test(streamUrl)) {
+      const recoveredVideo = await searchYouTubeVideo(`${nextTrack.title} ${nextTrack.author}`);
+      streamUrl = recoveredVideo?.url
+        || recoveredVideo?.watch_url
+        || recoveredVideo?.webpage_url
+        || (recoveredVideo?.id ? `https://www.youtube.com/watch?v=${recoveredVideo.id}` : null);
+    }
+
+    if (!streamUrl) {
+      throw new Error('No playable URL found');
+    }
+
+    const stream = await play.stream(streamUrl);
     const resource = createAudioResource(stream.stream, {
       inputType: stream.type || StreamType.Arbitrary,
     });
