@@ -13,6 +13,7 @@ import {
 } from '@discordjs/voice';
 import OpenAI from 'openai';
 import play from 'play-dl';
+import ytSearch from 'yt-search';
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
@@ -196,32 +197,23 @@ function normalizeSpotifyTrack(track, bridgedVideo) {
 }
 
 async function searchYouTubeVideo(query) {
-  const results = await play.search(query, {
-    limit: 1,
-    source: {
-      youtube: 'video',
-    },
-  });
+  const result = await ytSearch(query);
+  const firstVideo = result.videos?.[0] ?? null;
 
-  const firstResult = results[0] ?? null;
-  if (!firstResult) {
+  if (!firstVideo) {
     return null;
   }
 
-  const candidateUrl = firstResult.id
-    ? `https://www.youtube.com/watch?v=${firstResult.id}`
-    : (firstResult.url || firstResult.watch_url || firstResult.webpage_url || null);
-
-  if (!candidateUrl) {
-    return firstResult;
-  }
-
-  try {
-    const info = await play.video_info(candidateUrl);
-    return info.video_details;
-  } catch {
-    return firstResult;
-  }
+  return {
+    id:            firstVideo.videoId,
+    url:           firstVideo.url,
+    title:         firstVideo.title,
+    durationInSec: firstVideo.seconds ?? 0,
+    channel: {
+      name: firstVideo.author?.name || firstVideo.author || 'YouTube',
+      url:  firstVideo.author?.url,
+    },
+  };
 }
 
 async function bridgeSpotifyTrack(track) {
