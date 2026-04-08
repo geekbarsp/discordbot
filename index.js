@@ -308,6 +308,7 @@ async function playNext(guildId) {
 
   try {
     let streamUrl = nextTrack.url;
+    let streamInfo = null;
 
     if (!streamUrl || !/^https?:\/\//i.test(streamUrl)) {
       const recoveredVideo = await searchYouTubeVideo(`${nextTrack.title} ${nextTrack.author}`);
@@ -320,7 +321,13 @@ async function playNext(guildId) {
       throw new Error('No playable URL found');
     }
 
-    const stream = await play.stream(streamUrl);
+    if (nextTrack.source === 'YouTube' || nextTrack.source === 'Spotify') {
+      streamInfo = await play.video_info(streamUrl);
+    }
+
+    const stream = streamInfo
+      ? await play.stream_from_info(streamInfo, { discordPlayerCompatibility: true })
+      : await play.stream(streamUrl);
     const resource = createAudioResource(stream.stream, {
       inputType: stream.type || StreamType.Arbitrary,
     });
