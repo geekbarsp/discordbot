@@ -1,9 +1,18 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Events } from 'discord.js';
-import { Player } from 'discord-player';
-import { DefaultExtractors } from '@discord-player/extractor';
-import { joinVoiceChannel, VoiceConnectionStatus, entersState } from '@discordjs/voice';
+import {
+  AudioPlayerStatus,
+  NoSubscriberBehavior,
+  StreamType,
+  createAudioPlayer,
+  createAudioResource,
+  entersState,
+  getVoiceConnection,
+  joinVoiceChannel,
+  VoiceConnectionStatus,
+} from '@discordjs/voice';
 import OpenAI from 'openai';
+import play from 'play-dl';
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
@@ -18,6 +27,11 @@ function readEnv(name, placeholder) {
 const DISCORD_TOKEN   = readEnv('DISCORD_TOKEN', 'your-discord-bot-token-here');
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL?.trim() || 'https://api.openai.com/v1';
 const OPENAI_API_KEY  = readEnv('OPENAI_API_KEY', 'your-openai-key-here');
+const OPENAI_MODEL    = process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini';
+const SPOTIFY_CLIENT_ID     = readEnv('SPOTIFY_CLIENT_ID', 'your-spotify-client-id-here');
+const SPOTIFY_CLIENT_SECRET = readEnv('SPOTIFY_CLIENT_SECRET', 'your-spotify-client-secret-here');
+const SPOTIFY_REFRESH_TOKEN = readEnv('SPOTIFY_REFRESH_TOKEN', 'your-spotify-refresh-token-here');
+const SPOTIFY_MARKET        = process.env.SPOTIFY_MARKET?.trim() || 'US';
 
 if (!DISCORD_TOKEN) {
   console.error('[Config] DISCORD_TOKEN is missing in .env. Add your Discord bot token and restart the bot.');
@@ -26,6 +40,10 @@ if (!DISCORD_TOKEN) {
 
 if (!OPENAI_API_KEY) {
   console.warn('[Config] OPENAI_API_KEY is missing in .env. The `link` command will stay disabled until it is set.');
+}
+
+if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET || !SPOTIFY_REFRESH_TOKEN) {
+  console.warn('[Config] Spotify credentials are missing in .env. Spotify links may not resolve until they are added.');
 }
 
 // Guild ID → array of voice channel IDs the bot should permanently occupy.
@@ -59,34 +77,212 @@ const openai = OPENAI_API_KEY
     })
   : null;
 
-// ─── discord-player setup ───────────────────────────────────────────────────────
+// ─── Music state ────────────────────────────────────────────────────────────────
 
-const player = new Player(client);
+const musicStates = new Map();
 
-(async () => {
-  await player.extractors.loadMulti(DefaultExtractors);
-  console.log('[Player] Extractors loaded.');
-})();
+if (SPOTIFY_CLIENT_ID && SPOTIFY_CLIENT_SECRET && SPOTIFY_REFRESH_TOKEN) {
+  await play.setToken({
+    spotify: {
+      client_id:     SPOTIFY_CLIENT_ID,
+      client_secret: SPOTIFY_CLIENT_SECRET,
+      refresh_token: SPOTIFY_REFRESH_TOKEN,
+      market:        SPOTIFY_MARKET,
+    },
+  });
+}
 
-player.events.on('playerError', (queue, error) => {
-  console.error(`[Player] Error in guild ${queue.guild.id}:`, error.message);
-});
+function formatDuration(totalSeconds) {
+  if (!totalSeconds || Number.isNaN(totalSeconds)) {
+    return 'live';
+  }
 
-player.events.on('error', (queue, error) => {
-  console.error(`[Player] Queue error in guild ${queue.guild.id}:`, error.message);
-});
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
 
-player.events.on('audioTrackAdd', (queue, track) => {
-  queue.metadata?.channel?.send(`🎵 **Queued:** ${track.title}`);
-});
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
 
-player.events.on('playerStart', (queue, track) => {
-  queue.metadata?.channel?.send(`▶️ **Now playing:** ${track.title}`);
-});
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
 
-player.events.on('emptyQueue', (queue) => {
-  queue.metadata?.channel?.send('✅ Queue finished.');
-});
+function createMusicState(guildId) {
+  const audioPlayer = createAudioPlayer({
+    behaviors: {
+      noSubscriber: NoSubscriberBehavior.Pause,
+    },
+  });
+
+  const state = {
+    guildId,
+    audioPlayer,
+    connection: null,
+    textChannel: null,
+    queue: [],
+    currentTrack: null,
+  };
+
+  audioPlayer.on(AudioPlayerStatus.Idle, () => {
+    state.currentTrack = null;
+    void playNext(guildId);
+  });
+
+  audioPlayer.on('error', (error) => {
+    console.error(`[Music] Playback error in guild ${guildId}:`, error.message);
+    state.textChannel?.send(`❌ Playback failed: ${error.message}`);
+    state.currentTrack = null;
+    void playNext(guildId);
+  });
+
+  return state;
+}
+
+function getMusicState(guildId) {
+  let state = musicStates.get(guildId);
+  if (!state) {
+    state = createMusicState(guildId);
+    musicStates.set(guildId, state);
+  }
+  return state;
+}
+
+function normalizeYouTubeTrack(video) {
+  return {
+    title:    video.title || 'Unknown title',
+    url:      video.url,
+    author:   video.channel?.name || video.channel?.url || 'YouTube',
+    duration: video.durationInSec ?? 0,
+    source:   'YouTube',
+  };
+}
+
+function normalizeSpotifyTrack(track, bridgedVideo) {
+  return {
+    title:        `${track.name} - ${track.artists.map((artist) => artist.name).join(', ')}`,
+    url:          bridgedVideo.url,
+    originalUrl:  track.url,
+    author:       track.artists.map((artist) => artist.name).join(', '),
+    duration:     track.durationInSec ?? bridgedVideo.durationInSec ?? 0,
+    source:       'Spotify',
+    bridgedTitle: bridgedVideo.title,
+  };
+}
+
+async function searchYouTubeVideo(query) {
+  const results = await play.search(query, {
+    limit: 1,
+    source: {
+      youtube: 'video',
+    },
+  });
+
+  return results[0] ?? null;
+}
+
+async function bridgeSpotifyTrack(track) {
+  const searchQuery = `${track.name} ${track.artists.map((artist) => artist.name).join(' ')} audio`;
+  const bridgedVideo = await searchYouTubeVideo(searchQuery);
+
+  if (!bridgedVideo) {
+    throw new Error(`Could not find a playable YouTube match for Spotify track "${track.name}".`);
+  }
+
+  return normalizeSpotifyTrack(track, bridgedVideo);
+}
+
+async function resolveTracks(query) {
+  const queryType = await play.validate(query);
+
+  switch (queryType) {
+    case 'yt_video': {
+      const info = await play.video_info(query);
+      return [normalizeYouTubeTrack(info.video_details)];
+    }
+
+    case 'yt_playlist': {
+      const playlist = await play.playlist_info(query, { incomplete: true });
+      const videos = await playlist.all_videos();
+      return videos.map(normalizeYouTubeTrack);
+    }
+
+    case 'sp_track': {
+      const track = await play.spotify(query);
+      return [await bridgeSpotifyTrack(track)];
+    }
+
+    case 'sp_album':
+    case 'sp_playlist': {
+      const collection = await play.spotify(query);
+      const tracks = await collection.all_tracks();
+      return Promise.all(tracks.map((track) => bridgeSpotifyTrack(track)));
+    }
+
+    default: {
+      const firstVideo = await searchYouTubeVideo(query);
+      return firstVideo ? [normalizeYouTubeTrack(firstVideo)] : [];
+    }
+  }
+}
+
+async function ensureMusicConnection(voiceChannel) {
+  const state = getMusicState(voiceChannel.guild.id);
+  let connection = getVoiceConnection(voiceChannel.guild.id);
+
+  if (!connection || connection.joinConfig.channelId !== voiceChannel.id) {
+    if (connection) {
+      connection.destroy();
+    }
+
+    connection = joinVoiceChannel({
+      channelId:      voiceChannel.id,
+      guildId:        voiceChannel.guild.id,
+      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+      selfDeaf:       true,
+      selfMute:       false,
+    });
+  }
+
+  await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+  connection.subscribe(state.audioPlayer);
+  state.connection = connection;
+
+  return state;
+}
+
+async function playNext(guildId) {
+  const state = musicStates.get(guildId);
+  if (!state) return;
+
+  const nextTrack = state.queue.shift();
+  if (!nextTrack) {
+    state.textChannel?.send('✅ Queue finished.');
+    return;
+  }
+
+  state.currentTrack = nextTrack;
+
+  try {
+    const stream = await play.stream(nextTrack.url);
+    const resource = createAudioResource(stream.stream, {
+      inputType: stream.type || StreamType.Arbitrary,
+    });
+
+    state.audioPlayer.play(resource);
+
+    const sourceLabel = nextTrack.source === 'Spotify' && nextTrack.originalUrl
+      ? ` (from Spotify)`
+      : '';
+
+    await state.textChannel?.send(`▶️ **Now playing:** ${nextTrack.title}${sourceLabel}`);
+  } catch (error) {
+    console.error(`[Music] Stream error in guild ${guildId}:`, error.message);
+    await state.textChannel?.send(`❌ Could not play **${nextTrack.title}**: ${error.message}`);
+    state.currentTrack = null;
+    await playNext(guildId);
+  }
+}
 
 // ─── Permanent voice channel helpers ────────────────────────────────────────────
 
@@ -160,7 +356,7 @@ async function joinAllPermanentChannels() {
 
 async function handleAIChat(message, prompt) {
   if (!openai) {
-    await message.reply('❌ `OPENAI_API_KEY` is missing in `.env`, so the `link` command is unavailable right now.');
+    await message.reply('❌ `OPENAI_API_KEY` is missing or still set to the placeholder in `.env`, so the `link` command is unavailable right now.');
     return;
   }
 
@@ -168,7 +364,7 @@ async function handleAIChat(message, prompt) {
     await message.channel.sendTyping();
 
     const completion = await openai.chat.completions.create({
-      model:    'gpt-4o',
+      model:    OPENAI_MODEL,
       messages: [
         {
           role:    'system',
@@ -190,7 +386,17 @@ async function handleAIChat(message, prompt) {
     }
   } catch (err) {
     console.error('[AI] OpenAI error:', err.message);
-    await message.reply('❌ AI service is unavailable right now. Please try again later.');
+    if (err?.status === 401) {
+      await message.reply('❌ `OPENAI_API_KEY` is invalid. Replace it in `.env` and restart the bot.');
+      return;
+    }
+
+    if (err?.status === 404 || err?.code === 'model_not_found') {
+      await message.reply(`❌ The OpenAI model \`${OPENAI_MODEL}\` is not available for this API key. Set \`OPENAI_MODEL\` in \`.env\` to a model your account can use.`);
+      return;
+    }
+
+    await message.reply(`❌ AI request failed: ${err.message}`);
   }
 }
 
@@ -207,17 +413,26 @@ async function handlePlay(message, query) {
   }
 
   try {
-    const { track } = await player.play(voiceChannel, query, {
-      nodeOptions: {
-        metadata:     { channel: message.channel },
-        selfDeaf:     true,
-        volume:       80,
-        leaveOnEnd:   false,
-        leaveOnEmpty: false,
-      },
-    });
+    const tracks = await resolveTracks(query);
+    if (tracks.length === 0) {
+      return message.reply('❌ I could not find anything playable from that title or link.');
+    }
 
-    // audioTrackAdd / playerStart events handle the reply
+    const state = await ensureMusicConnection(voiceChannel);
+    state.textChannel = message.channel;
+
+    const startingFresh = !state.currentTrack && state.audioPlayer.state.status !== AudioPlayerStatus.Playing;
+    state.queue.push(...tracks);
+
+    if (tracks.length === 1) {
+      await message.reply(`🎵 **Queued:** ${tracks[0].title} \`[${formatDuration(tracks[0].duration)}]\``);
+    } else {
+      await message.reply(`🎵 **Queued ${tracks.length} tracks** from ${tracks[0].source}.`);
+    }
+
+    if (startingFresh) {
+      await playNext(message.guild.id);
+    }
   } catch (err) {
     console.error('[Music] Play error:', err.message);
     await message.reply(`❌ Could not play that track: ${err.message}`);
@@ -225,36 +440,46 @@ async function handlePlay(message, query) {
 }
 
 async function handleSkip(message) {
-  const queue = player.nodes.get(message.guild.id);
-  if (!queue || !queue.isPlaying()) {
+  const state = musicStates.get(message.guild.id);
+  if (!state || !state.currentTrack) {
     return message.reply('⏹️ Nothing is currently playing.');
   }
-  queue.node.skip();
+
+  state.audioPlayer.stop();
   await message.reply('⏭️ Skipped.');
 }
 
 async function handleQueue(message) {
-  const queue = player.nodes.get(message.guild.id);
-  if (!queue || queue.tracks.size === 0) {
+  const state = musicStates.get(message.guild.id);
+  const queuedTracks = state ? (state.currentTrack ? [state.currentTrack, ...state.queue] : [...state.queue]) : [];
+
+  if (queuedTracks.length === 0) {
     return message.reply('📭 The queue is empty.');
   }
 
-  const tracks = queue.tracks.toArray().slice(0, 10);
-  const list   = tracks.map((t, i) => `**${i + 1}.** ${t.title}`).join('\n');
-  const current = queue.currentTrack ? `▶️ **Now playing:** ${queue.currentTrack.title}\n\n` : '';
+  const upcoming = state.queue.slice(0, 10);
+  const list = upcoming.map((track, i) => `**${i + 1}.** ${track.title} \`[${formatDuration(track.duration)}]\``).join('\n');
+  const current = state.currentTrack ? `▶️ **Now playing:** ${state.currentTrack.title} \`[${formatDuration(state.currentTrack.duration)}]\`\n\n` : '';
 
-  await message.reply(`${current}**Up next:**\n${list}${queue.tracks.size > 10 ? `\n…and ${queue.tracks.size - 10} more` : ''}`);
+  if (upcoming.length === 0) {
+    return message.reply(`${current}📭 No queued tracks after the current song.`);
+  }
+
+  await message.reply(`${current}**Up next:**\n${list}${state.queue.length > 10 ? `\n…and ${state.queue.length - 10} more` : ''}`);
 }
 
 async function handleLeave(message) {
-  const queue = player.nodes.get(message.guild.id);
-  if (queue) {
-    queue.delete();
+  const state = musicStates.get(message.guild.id);
+  if (state) {
+    state.queue = [];
+    state.currentTrack = null;
+    state.audioPlayer.stop();
   }
 
-  const connection = (await import('@discordjs/voice')).getVoiceConnection(message.guild.id);
+  const connection = getVoiceConnection(message.guild.id);
   if (connection) {
     connection.destroy();
+    musicStates.delete(message.guild.id);
     await message.reply('👋 Left the voice channel.');
   } else {
     await message.reply('🤷 I\'m not in a voice channel.');
