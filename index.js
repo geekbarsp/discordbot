@@ -12,9 +12,10 @@ const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v
 const OPENAI_API_KEY  = process.env.OPENAI_API_KEY;
 
 // Guild ID → array of voice channel IDs the bot should permanently occupy.
-// Add your own guild/channel IDs here.
 const PERMANENT_VOICE_CHANNELS = {
-  // 'YOUR_GUILD_ID': ['VOICE_CHANNEL_ID_1', 'VOICE_CHANNEL_ID_2'],
+  '940723783491272754':  ['952814235803611167'],   // Hideout - chikahan
+  '1423247354491965452': ['1423247355423096845'],  // Hideout with Ashe - General
+  '1408251802620530769': ['1408251803388350634'],  // Verdantia - gameplay
 };
 
 // Prefix for music commands
