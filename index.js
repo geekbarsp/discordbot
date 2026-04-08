@@ -176,18 +176,19 @@ function createMusicState(guildId) {
     textChannel: null,
     queue: [],
     currentTrack: null,
+    isAdvancing: false,
   };
 
   audioPlayer.on(AudioPlayerStatus.Idle, () => {
     state.currentTrack = null;
-    void playNext(guildId);
+    void advancePlayback(guildId);
   });
 
   audioPlayer.on('error', (error) => {
     console.error(`[Music] Playback error in guild ${guildId}:`, error.message);
     state.textChannel?.send(`❌ Playback failed: ${error.message}`);
     state.currentTrack = null;
-    void playNext(guildId);
+    void advancePlayback(guildId);
   });
 
   return state;
@@ -200,6 +201,24 @@ function getMusicState(guildId) {
     musicStates.set(guildId, state);
   }
   return state;
+}
+
+async function advancePlayback(guildId) {
+  const state = musicStates.get(guildId);
+  if (!state || state.isAdvancing) {
+    return;
+  }
+
+  state.isAdvancing = true;
+
+  try {
+    await playNext(guildId);
+  } finally {
+    const latestState = musicStates.get(guildId);
+    if (latestState) {
+      latestState.isAdvancing = false;
+    }
+  }
 }
 
 function normalizeYouTubeTrack(video) {
@@ -368,7 +387,7 @@ async function playNext(guildId) {
 
       const fallbackStream = ytdl(streamUrl, {
         filter:        'audioonly',
-        quality:       'highestaudio[ext=webm]/highestaudio[ext=m4a]/highestaudio/bestaudio',
+        quality:       'highestaudio',
         highWaterMark: 1 << 25,
         agent,
         playerClients: ['WEB', 'WEB_EMBEDDED', 'IOS', 'ANDROID', 'TV'],
@@ -552,7 +571,7 @@ async function handlePlay(message, query) {
     }
 
     if (startingFresh) {
-      await playNext(message.guild.id);
+      await advancePlayback(message.guild.id);
     }
   } catch (err) {
     console.error('[Music] Play error:', err.message);
