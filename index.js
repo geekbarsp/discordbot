@@ -89,7 +89,7 @@ async function joinPermanentChannel(guild, channelId) {
     guildId:        guild.id,
     adapterCreator: guild.voiceAdapterCreator,
     selfDeaf:       true,
-    selfMute:       true,
+    selfMute:       false,
   });
 
   try {
@@ -144,7 +144,7 @@ async function handleAIChat(message, prompt) {
     await message.channel.sendTyping();
 
     const completion = await openai.chat.completions.create({
-      model:    'gpt-3.5-turbo',
+      model:    'gpt-4o',
       messages: [
         {
           role:    'system',
@@ -155,7 +155,7 @@ async function handleAIChat(message, prompt) {
           content: prompt,
         },
       ],
-      max_tokens: 500,
+      max_tokens: 1024,
     });
 
     const reply = completion.choices[0]?.message?.content?.trim();
@@ -185,8 +185,11 @@ async function handlePlay(message, query) {
   try {
     const { track } = await player.play(voiceChannel, query, {
       nodeOptions: {
-        metadata: { channel: message.channel },
-        selfDeaf:  true,
+        metadata:     { channel: message.channel },
+        selfDeaf:     true,
+        volume:       80,
+        leaveOnEnd:   false,
+        leaveOnEmpty: false,
       },
     });
 
