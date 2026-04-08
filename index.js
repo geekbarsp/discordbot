@@ -14,6 +14,7 @@ import {
 import OpenAI from 'openai';
 import play from 'play-dl';
 import ytSearch from 'yt-search';
+import ytdl from 'ytdl-core';
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
@@ -313,16 +314,44 @@ async function playNext(guildId) {
       throw new Error('No playable URL found');
     }
 
-    if (nextTrack.source === 'YouTube' || nextTrack.source === 'Spotify') {
-      streamInfo = await play.video_info(streamUrl);
-    }
+    let resource;
 
-    const stream = streamInfo
-      ? await play.stream_from_info(streamInfo, { discordPlayerCompatibility: true })
-      : await play.stream(streamUrl);
-    const resource = createAudioResource(stream.stream, {
-      inputType: stream.type || StreamType.Arbitrary,
-    });
+    try {
+      if (nextTrack.source === 'YouTube' || nextTrack.source === 'Spotify') {
+        streamInfo = await play.video_info(streamUrl);
+      }
+
+      const stream = streamInfo
+        ? await play.stream_from_info(streamInfo, { discordPlayerCompatibility: true })
+        : await play.stream(streamUrl);
+
+      resource = createAudioResource(stream.stream, {
+        inputType: stream.type || StreamType.Arbitrary,
+      });
+    } catch (streamError) {
+      if (!String(streamError.message).includes('Invalid URL')) {
+        throw streamError;
+      }
+
+      const headers = {
+        'user-agent': YOUTUBE_USER_AGENT,
+      };
+
+      if (YOUTUBE_COOKIE) {
+        headers.cookie = YOUTUBE_COOKIE;
+      }
+
+      const fallbackStream = ytdl(streamUrl, {
+        filter:         'audioonly',
+        quality:        'highestaudio',
+        highWaterMark:  1 << 25,
+        requestOptions: { headers },
+      });
+
+      resource = createAudioResource(fallbackStream, {
+        inputType: StreamType.Arbitrary,
+      });
+    }
 
     state.audioPlayer.play(resource);
 
