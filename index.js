@@ -1047,6 +1047,7 @@ async function handleHelp(message) {
     '**Bot Commands**',
     '`.help` - Show this command list.',
     '`.afk` - Mark yourself as AFK.',
+    '`.purge <count>` - Delete a number of recent messages. Manage Messages only.',
     '`.serverstat` - Create or refresh the server statistics voice channels. Admin only.',
     '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
     '`.spam` - Post one alert message in the current channel.',
@@ -1299,6 +1300,37 @@ async function handleServerStat(message) {
   }
 }
 
+async function handlePurge(message, args) {
+  if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+    return message.reply('You need the `Manage Messages` permission to use this command.');
+  }
+
+  const me = message.guild.members.me;
+  if (!me?.permissionsIn(message.channel).has(PermissionFlagsBits.ManageMessages)) {
+    return message.reply('I need the `Manage Messages` permission in this channel.');
+  }
+
+  if (!('bulkDelete' in message.channel)) {
+    return message.reply('This channel does not support bulk message deletion.');
+  }
+
+  const count = Number.parseInt(args[0], 10);
+  if (!Number.isInteger(count) || count < 1 || count > 100) {
+    return message.reply('Usage: `.purge <count>` with a number from 1 to 100.');
+  }
+
+  try {
+    const deleted = await message.channel.bulkDelete(count, true);
+    const confirmation = await message.channel.send(`Deleted ${deleted.size} message${deleted.size === 1 ? '' : 's'}.`);
+    setTimeout(() => {
+      confirmation.delete().catch(() => {});
+    }, 3000);
+  } catch (err) {
+    console.error('[Purge] Delete error:', err.message);
+    await message.reply(`I could not purge messages here: ${err.message}`);
+  }
+}
+
 async function handleNuke(message, args) {
   // Check administrator permission
   if (!message.member.permissions.has('Administrator')) {
@@ -1468,6 +1500,9 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'afk':
       return handleAfk(message);
+
+    case 'purge':
+      return handlePurge(message, args);
 
     case 'serverstat':
       return handleServerStat(message);
