@@ -805,7 +805,11 @@ async function handleAIChat(message, prompt) {
 
 async function handlePlay(message, query) {
   if (!query) {
-    return message.reply('❓ Please provide a song name or URL. Usage: `.p <song>`');
+    return message.reply('Please provide a song title. Usage: `.p <song title>`');
+  }
+
+  if (isValidLink(query)) {
+    return message.reply('Link playback is under construction and not yet fully built. Please send the song title only for now.');
   }
 
   const voiceChannel = message.member?.voice?.channel;
@@ -816,7 +820,7 @@ async function handlePlay(message, query) {
   try {
     const tracks = await resolveTracks(query);
     if (tracks.length === 0) {
-      return message.reply('❌ I could not find anything playable from that title or link.');
+      return message.reply('I could not find anything playable from that song title.');
     }
 
     const state = await ensureMusicConnection(voiceChannel);
@@ -893,7 +897,8 @@ async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
     '`.help` - Show this command list.',
-    '`.p <song or URL>` or `.play <song or URL>` - Play music or add it to the queue.',
+    '.p <song title> or .play <song title> - Search by title and play music or add it to the queue.',
+    'Links are currently under construction for playback, so use song titles only.',
     '`.s` or `.skip` - Skip the current song.',
     '`.q` or `.queue` - Show the songs in the queue.',
     '`.l`, `.leave`, or `.stop` - Stop playback, clear the queue, and leave the voice channel.',
@@ -1138,3 +1143,7 @@ try {
   }
   throw err;
 }
+
+
+
+
