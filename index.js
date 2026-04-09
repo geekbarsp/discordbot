@@ -488,18 +488,61 @@ async function searchYouTubeVideo(query) {
 }
 
 async function bridgeSpotifyTrack(track) {
-  const searchQuery = `${track.name} ${track.artists.map((artist) => artist.name).join(' ')} audio`;
-  const bridgedVideo = await searchYouTubeVideo(searchQuery);
+  const artistNames = track.artists.map((artist) => artist.name).join(' ');
+
+  // First attempt: include "audio" keyword for better results
+  const primaryQuery = `${track.name} ${artistNames} audio`;
+  console.log(`[Music] Bridging Spotify track "${track.name}" → searching: "${primaryQuery}"`);
+  let bridgedVideo = await searchYouTubeVideo(primaryQuery);
+
+  // Retry without "audio" keyword if first attempt fails
+  if (!bridgedVideo) {
+    const fallbackQuery = `${track.name} ${artistNames}`;
+    console.log(`[Music] Primary search failed for "${track.name}" — retrying without "audio": "${fallbackQuery}"`);
+    bridgedVideo = await searchYouTubeVideo(fallbackQuery);
+  }
 
   if (!bridgedVideo) {
-    throw new Error(`Could not find a playable YouTube match for Spotify track "${track.name}".`);
+    throw new Error(`Could not find a playable YouTube match for Spotify track "${track.name}" by ${artistNames}.`);
   }
 
   return normalizeSpotifyTrack(track, bridgedVideo);
 }
 
+/**
+ * Returns true if the input string looks like a URL (has a recognisable scheme
+ * or a hostname-style prefix).  Partial strings like ".p" or plain song names
+ * will return false so we skip straight to YouTube search.
+ */
+function isValidLink(input) {
+  if (!input || typeof input !== 'string') return false;
+  const trimmed = input.trim();
+
+  // Must start with a known scheme or a bare hostname pattern
+  if (/^https?:\/\//i.test(trimmed)) return true;
+  if (/^(www\.|youtu\.be\/|youtube\.com\/|spotify\.com\/|open\.spotify\.com\/)/i.test(trimmed)) return true;
+
+  return false;
+}
+
 async function resolveTracks(query) {
-  const queryType = await play.validate(query);
+  // If the input doesn't look like a URL at all, skip link parsing entirely
+  // and go straight to a YouTube keyword search.
+  if (!isValidLink(query)) {
+    console.log(`[Music] "${query}" is not a link — searching YouTube directly`);
+    const firstVideo = await searchYouTubeVideo(query);
+    return firstVideo ? [normalizeYouTubeTrack(firstVideo)] : [];
+  }
+
+  // Attempt to classify the link; fall back to search if validation throws.
+  let queryType;
+  try {
+    queryType = await play.validate(query);
+  } catch (validateError) {
+    console.warn(`[Music] play.validate() failed for "${query}": ${validateError.message} — falling back to YouTube search`);
+    const firstVideo = await searchYouTubeVideo(query);
+    return firstVideo ? [normalizeYouTubeTrack(firstVideo)] : [];
+  }
 
   switch (queryType) {
     case 'yt_video': {
@@ -526,6 +569,8 @@ async function resolveTracks(query) {
     }
 
     default: {
+      // play.validate() returned a falsy / unrecognised type — treat as search
+      console.log(`[Music] Unrecognised link type "${queryType}" for "${query}" — falling back to YouTube search`);
       const firstVideo = await searchYouTubeVideo(query);
       return firstVideo ? [normalizeYouTubeTrack(firstVideo)] : [];
     }
@@ -591,21 +636,19 @@ async function playNext(guildId) {
         inputType: stream.type || StreamType.Arbitrary,
       });
     } catch (streamError) {
-      const shouldRetryWithSearch = (
-        String(streamError.message).includes('Invalid URL')
-        || String(streamError.message).includes('This is not a YouTube Watch URL')
-      );
+      // Always attempt a YouTube search as recovery — don't retry the same URL
+      const searchQuery = `${nextTrack.title} ${nextTrack.author}`;
+      console.warn(`[Music] Stream failed for "${nextTrack.title}" (${streamError.message}) — recovering via YouTube search: "${searchQuery}"`);
 
-      if (!shouldRetryWithSearch) {
-        throw streamError;
-      }
-
-      const recoveredVideo = await searchYouTubeVideo(`${nextTrack.title} ${nextTrack.author}`);
+      const recoveredVideo = await searchYouTubeVideo(searchQuery);
       const recoveredUrl = toYouTubeWatchUrl(recoveredVideo) || recoveredVideo?.url || null;
+
       if (!recoveredUrl) {
+        console.error(`[Music] YouTube search recovery found no results for "${searchQuery}"`);
         throw streamError;
       }
 
+      console.log(`[Music] Recovery: streaming "${recoveredVideo.title}" (${recoveredUrl})`);
       const fallbackStream = await play.stream(recoveredUrl, { discordPlayerCompatibility: true });
 
       resource = createAudioResource(fallbackStream.stream, {
