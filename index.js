@@ -1063,9 +1063,73 @@ async function handleHelpSuperadmin(message) {
   const helpText = [
     '**Superadmin Commands**',
     '`.linkga <announcement text>` - Send a global announcement to every server the bot is in.',
+    '`.saclear <#channel>` - Delete this bot\'s messages from the selected channel.',
   ].join('\n');
 
   await message.reply(helpText);
+}
+
+async function handleSuperadminClear(message, args) {
+  if (message.author.id !== SUPERADMIN_USER_ID) {
+    return message.reply('You do not have permission to use this command.');
+  }
+
+  const input = args[0];
+  if (!input) {
+    return message.reply('Usage: `.saclear <#channel>`');
+  }
+
+  const channelId = input.replace(/^<#(\d+)>$/, '$1');
+  if (!/^\d+$/.test(channelId)) {
+    return message.reply('Usage: `.saclear <#channel>`');
+  }
+
+  const targetChannel = message.guild.channels.cache.get(channelId);
+  if (!targetChannel || !targetChannel.isTextBased() || targetChannel.isThread()) {
+    return message.reply('Please choose a normal text channel.');
+  }
+
+  const botMember = message.guild.members.me;
+  if (!botMember) {
+    return message.reply('I could not resolve my server permissions.');
+  }
+
+  const perms = targetChannel.permissionsFor(botMember);
+  if (!perms?.has('ViewChannel') || !perms.has('ReadMessageHistory') || !perms.has('ManageMessages')) {
+    return message.reply('I need `View Channel`, `Read Message History`, and `Manage Messages` in that channel.');
+  }
+
+  let deletedCount = 0;
+  let before;
+
+  try {
+    while (true) {
+      const fetched = await targetChannel.messages.fetch({ limit: 100, before });
+      if (fetched.size === 0) {
+        break;
+      }
+
+      const botMessages = fetched.filter((msg) => msg.author.id === client.user.id);
+      for (const botMessage of botMessages.values()) {
+        try {
+          await botMessage.delete();
+          deletedCount++;
+        } catch (err) {
+          console.warn(`[SAClear] Failed to delete message ${botMessage.id} in ${targetChannel.id}: ${err.message}`);
+        }
+      }
+
+      before = fetched.last()?.id;
+      if (!before) {
+        break;
+      }
+    }
+
+    await message.reply(`Deleted ${deletedCount} bot message${deletedCount === 1 ? '' : 's'} in ${targetChannel}.`);
+  } catch (err) {
+    console.error('[SAClear] Clear error:', err.message);
+    await message.reply(`I could not clear bot messages in ${targetChannel}: ${err.message}`);
+  }
 }
 
 async function handleLinkga(message, text) {
@@ -1281,6 +1345,9 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'reset':
       return handleResetChannel(message, args);
+
+    case 'saclear':
+      return handleSuperadminClear(message, args);
 
     case 'linkga':
       return handleLinkga(message, args.join(' '));
