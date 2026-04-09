@@ -87,6 +87,49 @@ const SERVER_STAT_CHANNEL_LABELS = {
   botMembers: 'Bots',
   boosts: 'Boosts',
 };
+const SERVER_LAYOUT_CONFIRM_MS = 2 * 60 * 1000;
+const SERVER_LAYOUT_PRESETS = {
+  ngaming: {
+    label: 'Gaming',
+    categories: [
+      { name: 'WELCOME', text: ['rules', 'announcements', 'introductions'], voice: [] },
+      { name: 'GAMING CHAT', text: ['general-chat', 'lfg', 'clips-and-screenshots', 'memes'], voice: ['party-room-1', 'party-room-2', 'chill-gaming'] },
+      { name: 'GAME TOPICS', text: ['fps-games', 'moba-games', 'survival-games'], voice: ['squad-strategy'] },
+    ],
+  },
+  nstudy: {
+    label: 'Study',
+    categories: [
+      { name: 'WELCOME', text: ['rules', 'announcements', 'introductions'], voice: [] },
+      { name: 'STUDY SPACE', text: ['general-study', 'homework-help', 'resources', 'productivity'], voice: ['study-room-1', 'study-room-2', 'silent-study'] },
+      { name: 'SUBJECTS', text: ['math', 'science', 'language'], voice: ['group-discussion'] },
+    ],
+  },
+  nfriendlyorg: {
+    label: 'Friendly Org',
+    categories: [
+      { name: 'WELCOME', text: ['rules', 'announcements', 'introductions'], voice: [] },
+      { name: 'COMMUNITY', text: ['general', 'events', 'media-share', 'suggestions'], voice: ['community-lounge', 'meeting-room'] },
+      { name: 'SUPPORT', text: ['help-desk', 'questions'], voice: ['staff-voice'] },
+    ],
+  },
+  npersonal: {
+    label: 'Personal',
+    categories: [
+      { name: 'HOME', text: ['updates', 'journal', 'links'], voice: [] },
+      { name: 'SOCIAL', text: ['general', 'photos', 'ideas'], voice: ['hangout', 'private-talk'] },
+      { name: 'WORKSPACE', text: ['plans', 'notes', 'archive'], voice: ['focus-room'] },
+    ],
+  },
+  nhackergroup: {
+    label: 'Hacker Group',
+    categories: [
+      { name: 'WELCOME', text: ['rules', 'announcements', 'introductions'], voice: [] },
+      { name: 'CYBER CHAT', text: ['general-chat', 'news', 'resources', 'tool-talk'], voice: ['ops-room', 'research-room'] },
+      { name: 'LABS', text: ['writeups', 'ctf-chat', 'scripts-and-code'], voice: ['team-lab'] },
+    ],
+  },
+};
 
 // ─── Discord client ─────────────────────────────────────────────────────────────
 
@@ -113,6 +156,7 @@ const openai = OPENAI_API_KEY
 
 const musicStates = new Map();
 const afkStates = new Map();
+const pendingServerLayouts = new Map();
 
 play.setToken({
   useragent: [YOUTUBE_USER_AGENT],
@@ -1049,6 +1093,7 @@ async function handleHelp(message) {
     '`.afk` - Mark yourself as AFK.',
     '`.purge <count>` - Delete a number of recent messages. Manage Messages only.',
     '`.serverstat` - Create or refresh the server statistics voice channels. Admin only.',
+    '`.ngaming`, `.nstudy`, `.nfriendlyorg`, `.npersonal`, `.nhackergroup` - Two-step admin-only server layout presets.',
     '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
     '`.spam` - Post one alert message in the current channel.',
     '`.reset <#channel>` - Clone a text channel, delete the old one, and post a reminder in the new channel. Admin only.',
@@ -1331,6 +1376,126 @@ async function handlePurge(message, args) {
   }
 }
 
+function getLayoutPreviewLines(presetKey) {
+  const preset = SERVER_LAYOUT_PRESETS[presetKey];
+  return preset.categories.map((category) => {
+    const textCount = category.text.length;
+    const voiceCount = category.voice.length;
+    return `- ${category.name}: ${textCount} text, ${voiceCount} voice`;
+  });
+}
+
+function getPendingLayoutKey(guildId, userId, presetKey) {
+  return `${guildId}:${userId}:${presetKey}`;
+}
+
+async function createServerLayoutFromPreset(guild, presetKey) {
+  const preset = SERVER_LAYOUT_PRESETS[presetKey];
+  const existingChannels = guild.channels.cache.filter((channel) => channel.id !== guild.rulesChannelId && channel.id !== guild.publicUpdatesChannelId);
+
+  const createdChannelIds = new Set();
+  const createdCategoryIds = new Set();
+  let firstTextChannel = null;
+
+  for (const categoryDef of preset.categories) {
+    const category = await guild.channels.create({
+      name: categoryDef.name,
+      type: ChannelType.GuildCategory,
+    });
+    createdCategoryIds.add(category.id);
+
+    for (const textName of categoryDef.text) {
+      const channel = await guild.channels.create({
+        name: textName,
+        type: ChannelType.GuildText,
+        parent: category.id,
+      });
+      createdChannelIds.add(channel.id);
+      if (!firstTextChannel) {
+        firstTextChannel = channel;
+      }
+    }
+
+    for (const voiceName of categoryDef.voice) {
+      const channel = await guild.channels.create({
+        name: voiceName,
+        type: ChannelType.GuildVoice,
+        parent: category.id,
+      });
+      createdChannelIds.add(channel.id);
+    }
+  }
+
+  for (const channel of existingChannels.values()) {
+    if (createdChannelIds.has(channel.id) || createdCategoryIds.has(channel.id)) {
+      continue;
+    }
+
+    try {
+      await channel.delete(`Server layout replaced with ${preset.label} preset`);
+    } catch (err) {
+      console.warn(`[Layout] Failed to delete channel ${channel.id} in guild ${guild.id}: ${err.message}`);
+    }
+  }
+
+  return { firstTextChannel };
+}
+
+async function handleServerLayoutPreset(message, presetKey, args) {
+  if (!message.member.permissions.has('Administrator')) {
+    return message.reply('You need Administrator permission to use this command.');
+  }
+
+  if (!message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return message.reply('I need the `Manage Channels` permission to rebuild the server layout.');
+  }
+
+  const preset = SERVER_LAYOUT_PRESETS[presetKey];
+  const pendingKey = getPendingLayoutKey(message.guild.id, message.author.id, presetKey);
+  const isConfirm = args[0]?.toLowerCase() === 'confirm';
+
+  if (!isConfirm) {
+    pendingServerLayouts.set(pendingKey, {
+      expiresAt: Date.now() + SERVER_LAYOUT_CONFIRM_MS,
+      presetKey,
+    });
+
+    const previewLines = getLayoutPreviewLines(presetKey).join('\n');
+    return message.reply(
+      [
+        `**${preset.label} layout request queued.**`,
+        '',
+        '**Regulations:**',
+        '1. This command will delete the current server channels and categories.',
+        '2. Roles and members will stay, but channel-specific history and custom layout will be lost.',
+        '3. New channels will be created from the selected preset before old ones are removed.',
+        `4. To continue, run \`.${presetKey} confirm\` within 2 minutes.`,
+        '',
+        '**What will be created:**',
+        previewLines,
+      ].join('\n'),
+    );
+  }
+
+  const pending = pendingServerLayouts.get(pendingKey);
+  if (!pending || pending.expiresAt < Date.now()) {
+    pendingServerLayouts.delete(pendingKey);
+    return message.reply(`Confirmation expired. Run \`.${presetKey}\` again first.`);
+  }
+
+  pendingServerLayouts.delete(pendingKey);
+
+  try {
+    const result = await createServerLayoutFromPreset(message.guild, presetKey);
+    if (result.firstTextChannel?.isTextBased()) {
+      await result.firstTextChannel.send(`The server has been rebuilt with the **${preset.label}** layout preset.`);
+    }
+  } catch (err) {
+    console.error('[Layout] Preset apply error:', err.message);
+    return message.reply(`I could not apply the ${preset.label} layout: ${err.message}`);
+  }
+}
+
 async function handleNuke(message, args) {
   // Check administrator permission
   if (!message.member.permissions.has('Administrator')) {
@@ -1506,6 +1671,13 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'serverstat':
       return handleServerStat(message);
+
+    case 'ngaming':
+    case 'nstudy':
+    case 'nfriendlyorg':
+    case 'npersonal':
+    case 'nhackergroup':
+      return handleServerLayoutPreset(message, command, args);
 
     case 'helpsa':
       return handleHelpSuperadmin(message);
