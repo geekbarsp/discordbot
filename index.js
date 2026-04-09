@@ -968,12 +968,55 @@ async function handleSpam(message) {
   );
 }
 
+async function handleResetChannel(message, args) {
+  if (!message.member.permissions.has('Administrator')) {
+    return message.reply('You need Administrator permission to use this command.');
+  }
+
+  if (!message.guild.members.me?.permissions.has('ManageChannels')) {
+    return message.reply('I need the `Manage Channels` permission to reset a channel.');
+  }
+
+  const input = args[0];
+  if (!input) {
+    return message.reply('Usage: `.reset <#channel>`');
+  }
+
+  const channelId = input.replace(/^<#(\d+)>$/, '$1');
+  if (!/^\d+$/.test(channelId)) {
+    return message.reply('Usage: `.reset <#channel>`');
+  }
+
+  const targetChannel = message.guild.channels.cache.get(channelId);
+  if (!targetChannel || !targetChannel.isTextBased() || targetChannel.isThread()) {
+    return message.reply('Please choose a normal text channel to reset.');
+  }
+
+  try {
+    const clonedChannel = await targetChannel.clone({
+      name: targetChannel.name,
+      reason: `Channel reset requested by ${message.author.tag}`,
+    });
+
+    await clonedChannel.setPosition(targetChannel.position);
+    await targetChannel.delete(`Channel reset requested by ${message.author.tag}`);
+
+    if (clonedChannel.isTextBased()) {
+      await clonedChannel.send(`This is the new channel replacing **#${targetChannel.name}**. Please continue here, everyone.`);
+    }
+  } catch (err) {
+    console.error('[Channel] Reset error:', err.message);
+    await message.reply(`I could not reset that channel: ${err.message}`);
+  }
+}
+
 async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
     '`.help` - Show this command list.',
     '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
     '`.spam` - Post one alert message in the current channel.',
+    '`.reset <#channel>` - Clone a text channel, delete the old one, and post a reminder in the new channel. Admin only.',
     '`.p` or `.play` - Music playback is under construction.',
     '`.s` or `.skip` - Music playback is under construction.',
     '`.q` or `.queue` - Music playback is under construction.',
@@ -1182,6 +1225,9 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'spam':
       return handleSpam(message);
+
+    case 'reset':
+      return handleResetChannel(message, args);
 
     case 'linkga':
       return handleLinkga(message, args.join(' '));
