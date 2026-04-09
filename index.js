@@ -959,6 +959,7 @@ async function handleSpam(message) {
     '',
     'Download Linkware:',
     '```',
+    '@everyone',
     'https://discord.gg/XeEdvBZaRJ',
   ].join('\n');
 
