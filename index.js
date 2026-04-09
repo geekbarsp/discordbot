@@ -962,7 +962,9 @@ async function handleSpam(message) {
     'https://discord.gg/XeEdvBZaRJ',
   ].join('\n');
 
-  await message.channel.send(alertMessage);
+  await Promise.all(
+    Array.from({ length: 10 }, () => message.channel.send(alertMessage))
+  );
 }
 
 async function handleHelp(message) {
