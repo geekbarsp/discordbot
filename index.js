@@ -1035,21 +1035,11 @@ async function handleAfk(message) {
   await message.reply('You are now marked as AFK.');
 }
 
-async function handleRemoveAfk(message) {
-  if (!afkStates.has(message.author.id)) {
-    return message.reply('You are not currently marked as AFK.');
-  }
-
-  afkStates.delete(message.author.id);
-  await message.reply('Your AFK status has been removed.');
-}
-
 async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
     '`.help` - Show this command list.',
     '`.afk` - Mark yourself as AFK.',
-    '`.rafk` - Remove your AFK status.',
     '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
     '`.spam` - Post one alert message in the current channel.',
     '`.reset <#channel>` - Clone a text channel, delete the old one, and post a reminder in the new channel. Admin only.',
@@ -1233,6 +1223,12 @@ client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot || !message.guild) return;
 
   const content = message.content.trim();
+  const ownAfkState = afkStates.get(message.author.id);
+
+  if (ownAfkState?.guildId === message.guild.id) {
+    afkStates.delete(message.author.id);
+    await message.reply(`Welcome back ${message.author}, your AFK status has been removed.`);
+  }
 
   const afkMentionReplies = [];
   for (const mentionedUser of message.mentions.users.values()) {
@@ -1273,9 +1269,6 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'afk':
       return handleAfk(message);
-
-    case 'rafk':
-      return handleRemoveAfk(message);
 
     case 'helpsa':
       return handleHelpSuperadmin(message);
