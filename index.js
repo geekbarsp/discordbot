@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Events } from 'discord.js';
+import http from 'node:http';
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
@@ -33,12 +34,14 @@ const OPENAI_MODEL    = process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini';
 const SPOTIFY_CLIENT_ID     = readEnv('SPOTIFY_CLIENT_ID', 'your-spotify-client-id-here');
 const SPOTIFY_CLIENT_SECRET = readEnv('SPOTIFY_CLIENT_SECRET', 'your-spotify-client-secret-here');
 const SPOTIFY_REFRESH_TOKEN = readEnv('SPOTIFY_REFRESH_TOKEN', 'your-spotify-refresh-token-here');
+const SPOTIFY_REDIRECT_URI  = process.env.SPOTIFY_REDIRECT_URI?.trim() || 'https://dark-bot-production-d2fb.up.railway.app/callback';
 const SPOTIFY_MARKET        = process.env.SPOTIFY_MARKET?.trim() || 'US';
 const YOUTUBE_COOKIE        = readEnv('YOUTUBE_COOKIE', 'your-youtube-cookie-here');
 const YOUTUBE_USER_AGENT    = readEnv(
   'YOUTUBE_USER_AGENT',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
 );
+const PORT                 = Number(process.env.PORT || 3000);
 
 if (!DISCORD_TOKEN) {
   console.error('[Config] DISCORD_TOKEN is missing in .env. Add your Discord bot token and restart the bot.');
@@ -128,6 +131,203 @@ function formatDuration(totalSeconds) {
   }
 
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function htmlEscape(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderHtmlPage(title, body) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${htmlEscape(title)}</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f4ec;
+        --card: #fffaf0;
+        --text: #1f1a14;
+        --muted: #675b4f;
+        --accent: #1db954;
+        --danger: #b23a2c;
+        --border: #e4d8c8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background:
+          radial-gradient(circle at top, rgba(29, 185, 84, 0.14), transparent 32%),
+          linear-gradient(180deg, #fbf8f1 0%, var(--bg) 100%);
+        color: var(--text);
+        font-family: Georgia, "Times New Roman", serif;
+      }
+      main {
+        width: min(760px, 100%);
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        padding: 28px;
+        box-shadow: 0 18px 60px rgba(48, 35, 20, 0.08);
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(2rem, 4vw, 3rem);
+      }
+      p {
+        margin: 0 0 14px;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+      pre {
+        overflow-x: auto;
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: #16130f;
+        color: #f8f4ef;
+        font-size: 0.95rem;
+      }
+      code {
+        font-family: Consolas, "Courier New", monospace;
+      }
+      .ok { color: var(--accent); }
+      .error { color: var(--danger); }
+    </style>
+  </head>
+  <body>
+    <main>
+      ${body}
+    </main>
+  </body>
+</html>`;
+}
+
+function createSpotifyAuthorizeUrl() {
+  const params = new URLSearchParams({
+    client_id: SPOTIFY_CLIENT_ID || '',
+    response_type: 'code',
+    redirect_uri: SPOTIFY_REDIRECT_URI,
+    scope: 'user-read-private user-read-email',
+  });
+
+  return `https://accounts.spotify.com/authorize?${params.toString()}`;
+}
+
+async function exchangeSpotifyCodeForTokens(code) {
+  const basicToken = Buffer.from(`${SPOTIFY_CLIENT_ID}:${SPOTIFY_CLIENT_SECRET}`).toString('base64');
+  const body = new URLSearchParams({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: SPOTIFY_REDIRECT_URI,
+  });
+
+  const response = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${basicToken}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body,
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload.error_description || payload.error || `Spotify token exchange failed with status ${response.status}`;
+    throw new Error(message);
+  }
+
+  return payload;
+}
+
+function startCallbackServer() {
+  const server = http.createServer(async (req, res) => {
+    const requestUrl = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
+
+    if (requestUrl.pathname === '/') {
+      const authorizeUrl = createSpotifyAuthorizeUrl();
+      const body = `
+        <h1>Spotify Setup</h1>
+        <p>Use the link below to approve your Spotify app and generate a refresh token for this bot.</p>
+        <p><a href="${htmlEscape(authorizeUrl)}">Authorize Spotify</a></p>
+        <p>Callback URL: <code>${htmlEscape(SPOTIFY_REDIRECT_URI)}</code></p>
+      `;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderHtmlPage('Spotify Setup', body));
+      return;
+    }
+
+    if (requestUrl.pathname !== '/callback') {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Not found');
+      return;
+    }
+
+    if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
+      res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderHtmlPage(
+        'Spotify Callback Error',
+        '<h1 class="error">Missing Spotify config</h1><p>Add <code>SPOTIFY_CLIENT_ID</code> and <code>SPOTIFY_CLIENT_SECRET</code> before using this callback.</p>',
+      ));
+      return;
+    }
+
+    const error = requestUrl.searchParams.get('error');
+    const code = requestUrl.searchParams.get('code');
+
+    if (error) {
+      res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderHtmlPage(
+        'Spotify Callback Error',
+        `<h1 class="error">Spotify returned an error</h1><p><code>${htmlEscape(error)}</code></p>`,
+      ));
+      return;
+    }
+
+    if (!code) {
+      res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderHtmlPage(
+        'Spotify Callback Error',
+        '<h1 class="error">Missing code</h1><p>Open the Spotify authorize URL first, then come back through the callback.</p>',
+      ));
+      return;
+    }
+
+    try {
+      const tokens = await exchangeSpotifyCodeForTokens(code);
+      console.log('[Spotify] Refresh token generated via callback route.');
+
+      const body = `
+        <h1 class="ok">Spotify connected</h1>
+        <p>Copy this refresh token into your environment as <code>SPOTIFY_REFRESH_TOKEN</code> and redeploy or restart the bot.</p>
+        <pre><code>${htmlEscape(tokens.refresh_token || 'No refresh token returned')}</code></pre>
+        <p>You can also keep this access token for quick checks, but the refresh token is the important one.</p>
+      `;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderHtmlPage('Spotify Connected', body));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderHtmlPage(
+        'Spotify Callback Error',
+        `<h1 class="error">Token exchange failed</h1><p>${htmlEscape(err.message || 'Unknown error')}</p>`,
+      ));
+    }
+  });
+
+  server.listen(PORT, () => {
+    console.log(`[Web] Callback server listening on port ${PORT}`);
+    console.log(`[Web] Spotify callback URL: ${SPOTIFY_REDIRECT_URI}`);
+  });
 }
 
 function createMusicState(guildId) {
@@ -703,6 +903,8 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 // ─── Login ───────────────────────────────────────────────────────────────────────
+
+startCallbackServer();
 
 try {
   await client.login(DISCORD_TOKEN);
