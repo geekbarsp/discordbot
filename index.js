@@ -622,7 +622,12 @@ async function playNext(guildId) {
     await state.textChannel?.send(`▶️ **Now playing:** ${nextTrack.title}${sourceLabel}`);
   } catch (error) {
     console.error(`[Music] Stream error in guild ${guildId}:`, error.message, '| URL:', streamUrl ?? 'none');
-    if (String(error.message).includes('Sign in to confirm you’re not a bot')) {
+    const errorMessage = String(error.message || '');
+    const youtubeStreamBlocked = (
+      errorMessage.includes('Sign in to confirm you')
+      || (errorMessage.includes('Invalid URL') && String(streamUrl).includes('youtube.com/watch'))
+    );
+    if (youtubeStreamBlocked) {
       await state.textChannel?.send(
         '❌ YouTube blocked this server request. Add `YOUTUBE_COOKIE` in Railway Variables, redeploy, and try again.',
       );
