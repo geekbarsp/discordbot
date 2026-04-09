@@ -941,6 +941,82 @@ async function handleLinkga(message, text) {
   await message.reply(`✅ Announcement sent to ${sentCount} server${sentCount !== 1 ? 's' : ''}.`);
 }
 
+// ─── Admin commands ──────────────────────────────────────────────────────────────
+
+async function handleNuke(message, args) {
+  // Check administrator permission
+  if (!message.member.permissions.has('Administrator')) {
+    return message.reply('❌ You need Administrator permission to use this command.');
+  }
+
+  // Parse user from mention or raw ID
+  const input = args[0];
+  if (!input) {
+    return message.reply('❓ Usage: `.nuke <@user>` or `.nuke <user_id>`');
+  }
+
+  const userId = input.replace(/^<@!?(\d+)>$/, '$1');
+  if (!/^\d+$/.test(userId)) {
+    return message.reply('❓ Usage: `.nuke <@user>` or `.nuke <user_id>`');
+  }
+
+  // Resolve the member from the guild
+  let target;
+  try {
+    target = await message.guild.members.fetch(userId);
+  } catch {
+    return message.reply('❌ That user is not in this server.');
+  }
+
+  if (!target) {
+    return message.reply('❌ That user is not in this server.');
+  }
+
+  // Safety checks
+  if (target.id === message.author.id) {
+    return message.reply('❌ You can\'t nuke yourself!');
+  }
+
+  if (target.id === client.user.id) {
+    return message.reply('❌ You can\'t nuke me!');
+  }
+
+  if (target.roles.highest.position >= message.member.roles.highest.position) {
+    return message.reply('❌ You can\'t nuke a user with equal or higher role!');
+  }
+
+  if (!target.kickable) {
+    return message.reply('❌ I don\'t have permission to kick this user.');
+  }
+
+  const userName = target.user.username;
+  const serverName = message.guild.name;
+
+  // Dramatic sequence
+  await message.channel.send(`Initializing nuke sequence for ${target}...`);
+  await new Promise(resolve => setTimeout(resolve, 600));
+  await message.channel.send('Preparing nuke....');
+  await new Promise(resolve => setTimeout(resolve, 600));
+  await message.channel.send('Loading payload....');
+  await new Promise(resolve => setTimeout(resolve, 600));
+  await message.channel.send('Bypassing shields....');
+  await new Promise(resolve => setTimeout(resolve, 600));
+  await message.channel.send('Target locked....');
+  await new Promise(resolve => setTimeout(resolve, 600));
+  await message.channel.send('Final countdown engaged....');
+  await new Promise(resolve => setTimeout(resolve, 600));
+  await message.channel.send('Nuke launched. Impact confirmed.');
+  await new Promise(resolve => setTimeout(resolve, 600));
+  await message.channel.send(`${userName} nuke away from the ${serverName}`);
+
+  // Kick the user
+  try {
+    await target.kick('Nuked by admin command');
+  } catch (err) {
+    await message.channel.send(`❌ Failed to kick ${userName}: ${err.message}`);
+  }
+}
+
 // ─── Event: ready ───────────────────────────────────────────────────────────────
 
 client.once(Events.ClientReady, async (c) => {
@@ -987,6 +1063,9 @@ client.on(Events.MessageCreate, async (message) => {
   switch (command) {
     case 'linkga':
       return handleLinkga(message, args.join(' '));
+
+    case 'nuke':
+      return handleNuke(message, args);
 
     case 'p':
     case 'play':
