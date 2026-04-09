@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Events } from 'discord.js';
+import { ChannelType, Client, GatewayIntentBits, Events, PermissionFlagsBits } from 'discord.js';
 import http from 'node:http';
 import {
   AudioPlayerStatus,
@@ -80,6 +80,13 @@ const PREFIX = '.';
 
 // Superadmin user ID — only this user can run privileged commands like `.linkga`
 const SUPERADMIN_USER_ID = '456699600154263555';
+const SERVER_STAT_CATEGORY_NAME = 'Server Statistics';
+const SERVER_STAT_CHANNEL_LABELS = {
+  totalMembers: 'All Members',
+  userMembers: 'Members',
+  botMembers: 'Bots',
+  boosts: 'Boosts',
+};
 
 // ─── Discord client ─────────────────────────────────────────────────────────────
 
@@ -1040,6 +1047,7 @@ async function handleHelp(message) {
     '**Bot Commands**',
     '`.help` - Show this command list.',
     '`.afk` - Mark yourself as AFK.',
+    '`.serverstat` - Create or refresh the server statistics voice channels. Admin only.',
     '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
     '`.spam` - Post one alert message in the current channel.',
     '`.reset <#channel>` - Clone a text channel, delete the old one, and post a reminder in the new channel. Admin only.',
@@ -1186,6 +1194,109 @@ async function handleLinkga(message, text) {
 
 // ─── Admin commands ──────────────────────────────────────────────────────────────
 
+function getServerStatChannelName(label, count) {
+  return `${label}: ${count}`;
+}
+
+function getServerStatCategory(guild) {
+  return guild.channels.cache.find(
+    (channel) => channel.type === ChannelType.GuildCategory && channel.name === SERVER_STAT_CATEGORY_NAME,
+  ) ?? null;
+}
+
+function getServerStatVoiceChannels(guild, categoryId) {
+  const voiceChannels = guild.channels.cache.filter(
+    (channel) => channel.parentId === categoryId && channel.type === ChannelType.GuildVoice,
+  );
+
+  return {
+    totalMembers: voiceChannels.find((channel) => channel.name.startsWith(`${SERVER_STAT_CHANNEL_LABELS.totalMembers}:`)) ?? null,
+    userMembers: voiceChannels.find((channel) => channel.name.startsWith(`${SERVER_STAT_CHANNEL_LABELS.userMembers}:`)) ?? null,
+    botMembers: voiceChannels.find((channel) => channel.name.startsWith(`${SERVER_STAT_CHANNEL_LABELS.botMembers}:`)) ?? null,
+    boosts: voiceChannels.find((channel) => channel.name.startsWith(`${SERVER_STAT_CHANNEL_LABELS.boosts}:`)) ?? null,
+  };
+}
+
+async function updateServerStatsForGuild(guild) {
+  const category = getServerStatCategory(guild);
+  if (!category) {
+    return;
+  }
+
+  const channels = getServerStatVoiceChannels(guild, category.id);
+  if (!channels.totalMembers && !channels.userMembers && !channels.botMembers && !channels.boosts) {
+    return;
+  }
+
+  const members = await guild.members.fetch();
+  const counts = {
+    totalMembers: guild.memberCount ?? members.size,
+    userMembers: members.filter((member) => !member.user.bot).size,
+    botMembers: members.filter((member) => member.user.bot).size,
+    boosts: guild.premiumSubscriptionCount ?? 0,
+  };
+
+  await Promise.all(
+    Object.entries(channels).map(async ([key, channel]) => {
+      if (!channel) {
+        return;
+      }
+
+      const nextName = getServerStatChannelName(SERVER_STAT_CHANNEL_LABELS[key], counts[key]);
+      if (channel.name !== nextName) {
+        await channel.setName(nextName);
+      }
+    }),
+  );
+}
+
+async function handleServerStat(message) {
+  if (!message.member.permissions.has('Administrator')) {
+    return message.reply('You need Administrator permission to use this command.');
+  }
+
+  if (!message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return message.reply('I need the `Manage Channels` permission to create server statistics.');
+  }
+
+  let category = getServerStatCategory(message.guild);
+
+  try {
+    if (!category) {
+      category = await message.guild.channels.create({
+        name: SERVER_STAT_CATEGORY_NAME,
+        type: ChannelType.GuildCategory,
+        permissionOverwrites: [
+          {
+            id: message.guild.roles.everyone.id,
+            allow: [PermissionFlagsBits.ViewChannel],
+            deny: [PermissionFlagsBits.Connect, PermissionFlagsBits.Speak],
+          },
+        ],
+      });
+    }
+
+    const existingChannels = getServerStatVoiceChannels(message.guild, category.id);
+    const definitions = ['totalMembers', 'userMembers', 'botMembers', 'boosts'];
+
+    for (const key of definitions) {
+      if (!existingChannels[key]) {
+        await message.guild.channels.create({
+          name: getServerStatChannelName(SERVER_STAT_CHANNEL_LABELS[key], 0),
+          type: ChannelType.GuildVoice,
+          parent: category.id,
+        });
+      }
+    }
+
+    await updateServerStatsForGuild(message.guild);
+    await message.reply('Server statistics channels are now set up and will update automatically.');
+  } catch (err) {
+    console.error('[ServerStat] Setup error:', err.message);
+    await message.reply(`I could not create the server statistics channels: ${err.message}`);
+  }
+}
+
 async function handleNuke(message, args) {
   // Check administrator permission
   if (!message.member.permissions.has('Administrator')) {
@@ -1267,6 +1378,10 @@ client.once(Events.ClientReady, async (c) => {
   c.user.setActivity('24/7 | .help for commands');
 
   await joinAllPermanentChannels();
+
+  for (const guild of c.guilds.cache.values()) {
+    await updateServerStatsForGuild(guild);
+  }
 });
 
 // ─── Event: guildCreate (join new guilds) ────────────────────────────────────────
@@ -1278,6 +1393,24 @@ client.on(Events.GuildCreate, async (guild) => {
       await joinPermanentChannel(guild, channelId);
     }
   }
+
+  await updateServerStatsForGuild(guild);
+});
+
+client.on(Events.GuildMemberAdd, async (member) => {
+  await updateServerStatsForGuild(member.guild);
+});
+
+client.on(Events.GuildMemberRemove, async (member) => {
+  await updateServerStatsForGuild(member.guild);
+});
+
+client.on(Events.GuildMemberUpdate, async (_, newMember) => {
+  await updateServerStatsForGuild(newMember.guild);
+});
+
+client.on(Events.GuildUpdate, async (_, newGuild) => {
+  await updateServerStatsForGuild(newGuild);
 });
 
 // ─── Event: messageCreate ────────────────────────────────────────────────────────
@@ -1333,6 +1466,9 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'afk':
       return handleAfk(message);
+
+    case 'serverstat':
+      return handleServerStat(message);
 
     case 'helpsa':
       return handleHelpSuperadmin(message);
