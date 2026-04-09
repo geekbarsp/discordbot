@@ -371,7 +371,6 @@ async function playNext(guildId) {
 
   try {
     let streamUrl = toYouTubeWatchUrl(nextTrack.url) || nextTrack.url;
-    let streamInfo = null;
 
     if (!streamUrl || !/^https?:\/\//i.test(streamUrl)) {
       const recoveredVideo = await searchYouTubeVideo(`${nextTrack.title} ${nextTrack.author}`);
@@ -385,13 +384,7 @@ async function playNext(guildId) {
     let resource;
 
     try {
-      if (nextTrack.source === 'YouTube' || nextTrack.source === 'Spotify') {
-        streamInfo = await play.video_info(streamUrl);
-      }
-
-      const stream = streamInfo
-        ? await play.stream_from_info(streamInfo, { discordPlayerCompatibility: true })
-        : await play.stream(streamUrl);
+      const stream = await play.stream(streamUrl, { discordPlayerCompatibility: true });
 
       resource = createAudioResource(stream.stream, {
         inputType: stream.type || StreamType.Arbitrary,
@@ -412,10 +405,7 @@ async function playNext(guildId) {
         throw streamError;
       }
 
-      streamInfo = await play.video_info(recoveredUrl);
-      const fallbackStream = await play.stream_from_info(streamInfo, {
-        discordPlayerCompatibility: true,
-      });
+      const fallbackStream = await play.stream(recoveredUrl, { discordPlayerCompatibility: true });
 
       resource = createAudioResource(fallbackStream.stream, {
         inputType: fallbackStream.type || StreamType.Arbitrary,
@@ -430,7 +420,7 @@ async function playNext(guildId) {
 
     await state.textChannel?.send(`▶️ **Now playing:** ${nextTrack.title}${sourceLabel}`);
   } catch (error) {
-    console.error(`[Music] Stream error in guild ${guildId}:`, error.message);
+    console.error(`[Music] Stream error in guild ${guildId}:`, error.message, '| URL:', streamUrl ?? 'none');
     if (String(error.message).includes('Sign in to confirm you’re not a bot')) {
       await state.textChannel?.send(
         '❌ YouTube blocked this server request. Add `YOUTUBE_COOKIE` in Railway Variables, redeploy, and try again.',
