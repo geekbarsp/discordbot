@@ -1276,6 +1276,8 @@ async function handleServerStat(message) {
       });
     }
 
+    await category.setPosition(0);
+
     const existingChannels = getServerStatVoiceChannels(message.guild, category.id);
     const definitions = ['totalMembers', 'userMembers', 'botMembers', 'boosts'];
 
