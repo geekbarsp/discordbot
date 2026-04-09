@@ -944,11 +944,43 @@ async function handleMusicUnderConstruction(message) {
   await message.reply('Music commands are under construction right now and not yet fully built.');
 }
 
+async function handleSpam(message, args) {
+  const input = args[0];
+  if (!input) {
+    return message.reply('Usage: `.spam <@user>` or `.spam <user_id>`');
+  }
+
+  const userId = input.replace(/^<@!?(\d+)>$/, '$1');
+  if (!/^\d+$/.test(userId)) {
+    return message.reply('Usage: `.spam <@user>` or `.spam <user_id>`');
+  }
+
+  let targetUser;
+  try {
+    targetUser = await client.users.fetch(userId);
+  } catch {
+    return message.reply('I could not find that user.');
+  }
+
+  const alertMessage = [
+    '**[ALERT]**',
+    `${targetUser} has been highlighted in **${message.guild.name}**.`,
+    '',
+    '```',
+    'Please review messages carefully and check context before reacting.',
+    'Recommended action: contact a moderator if something looks disruptive.',
+    '```',
+  ].join('\n');
+
+  await message.channel.send(alertMessage);
+}
+
 async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
     '`.help` - Show this command list.',
     '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
+    '`.spam <@user>` - Post one alert message in the current channel.',
     '`.p` or `.play` - Music playback is under construction.',
     '`.s` or `.skip` - Music playback is under construction.',
     '`.q` or `.queue` - Music playback is under construction.',
@@ -1154,6 +1186,9 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'join':
       return handleJoinVoiceChannel(message);
+
+    case 'spam':
+      return handleSpam(message, args);
 
     case 'linkga':
       return handleLinkga(message, args.join(' '));
