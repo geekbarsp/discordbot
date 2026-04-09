@@ -171,6 +171,60 @@ function getMusicState(guildId) {
   return state;
 }
 
+function toYouTubeWatchUrl(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    return (
+      toYouTubeWatchUrl(value.id)
+      || toYouTubeWatchUrl(value.videoId)
+      || toYouTubeWatchUrl(value.url)
+      || toYouTubeWatchUrl(value.watch_url)
+      || toYouTubeWatchUrl(value.webpage_url)
+      || null
+    );
+  }
+
+  const raw = String(value).trim();
+  if (!raw) {
+    return null;
+  }
+
+  // Plain YouTube video IDs are the most reliable input for play-dl.
+  if (/^[a-zA-Z0-9_-]{11}$/.test(raw)) {
+    return `https://www.youtube.com/watch?v=${raw}`;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+
+    if (host === 'youtu.be') {
+      const videoId = parsed.pathname.split('/').filter(Boolean)[0];
+      return videoId ? `https://www.youtube.com/watch?v=${videoId}` : null;
+    }
+
+    if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
+      const watchId = parsed.searchParams.get('v');
+      if (watchId) {
+        return `https://www.youtube.com/watch?v=${watchId}`;
+      }
+
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      if (parts[0] === 'shorts' || parts[0] === 'embed' || parts[0] === 'live') {
+        const videoId = parts[1];
+        return videoId ? `https://www.youtube.com/watch?v=${videoId}` : null;
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 async function advancePlayback(guildId) {
   const state = musicStates.get(guildId);
   if (!state || state.isAdvancing) {
@@ -190,9 +244,7 @@ async function advancePlayback(guildId) {
 }
 
 function normalizeYouTubeTrack(video) {
-  const canonicalUrl = video.id
-    ? `https://www.youtube.com/watch?v=${video.id}`
-    : (video.url || video.watch_url || video.webpage_url || null);
+  const canonicalUrl = toYouTubeWatchUrl(video);
 
   return {
     title:    video.title || 'Unknown title',
@@ -225,7 +277,7 @@ async function searchYouTubeVideo(query) {
 
   return {
     id:            firstVideo.videoId,
-    url:           firstVideo.url,
+    url:           toYouTubeWatchUrl(firstVideo.videoId) || toYouTubeWatchUrl(firstVideo.url),
     title:         firstVideo.title,
     durationInSec: firstVideo.seconds ?? 0,
     channel: {
@@ -318,14 +370,12 @@ async function playNext(guildId) {
   state.currentTrack = nextTrack;
 
   try {
-    let streamUrl = nextTrack.url;
+    let streamUrl = toYouTubeWatchUrl(nextTrack.url) || nextTrack.url;
     let streamInfo = null;
 
     if (!streamUrl || !/^https?:\/\//i.test(streamUrl)) {
       const recoveredVideo = await searchYouTubeVideo(`${nextTrack.title} ${nextTrack.author}`);
-      streamUrl = recoveredVideo?.id
-        ? `https://www.youtube.com/watch?v=${recoveredVideo.id}`
-        : (recoveredVideo?.url || recoveredVideo?.watch_url || recoveredVideo?.webpage_url || null);
+      streamUrl = toYouTubeWatchUrl(recoveredVideo) || recoveredVideo?.url || null;
     }
 
     if (!streamUrl) {
@@ -357,11 +407,12 @@ async function playNext(guildId) {
       }
 
       const recoveredVideo = await searchYouTubeVideo(`${nextTrack.title} ${nextTrack.author}`);
-      if (!recoveredVideo?.url) {
+      const recoveredUrl = toYouTubeWatchUrl(recoveredVideo) || recoveredVideo?.url || null;
+      if (!recoveredUrl) {
         throw streamError;
       }
 
-      streamInfo = await play.video_info(recoveredVideo.url);
+      streamInfo = await play.video_info(recoveredUrl);
       const fallbackStream = await play.stream_from_info(streamInfo, {
         discordPlayerCompatibility: true,
       });
