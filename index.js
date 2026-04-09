@@ -889,6 +889,35 @@ async function handleLeave(message) {
 
 // ─── Superadmin commands ─────────────────────────────────────────────────────────
 
+async function handleHelp(message) {
+  const helpText = [
+    '**Bot Commands**',
+    '`.help` - Show this command list.',
+    '`.p <song or URL>` or `.play <song or URL>` - Play music or add it to the queue.',
+    '`.s` or `.skip` - Skip the current song.',
+    '`.q` or `.queue` - Show the songs in the queue.',
+    '`.l`, `.leave`, or `.stop` - Stop playback, clear the queue, and leave the voice channel.',
+    '`link <message>` - Chat with the AI assistant.',
+    '`.nuke <@user or user_id>` - Kick a user with a dramatic sequence. Admin only.',
+    '`.helpsa` - Show superadmin-only commands.',
+  ].join('\n');
+
+  await message.reply(helpText);
+}
+
+async function handleHelpSuperadmin(message) {
+  if (message.author.id !== SUPERADMIN_USER_ID) {
+    return message.reply('❌ You do not have permission to use this command.');
+  }
+
+  const helpText = [
+    '**Superadmin Commands**',
+    '`.linkga <announcement text>` - Send a global announcement to every server the bot is in.',
+  ].join('\n');
+
+  await message.reply(helpText);
+}
+
 async function handleLinkga(message, text) {
   if (message.author.id !== SUPERADMIN_USER_ID) {
     return message.reply('❌ You don\'t have permission to use this command.');
@@ -1021,7 +1050,7 @@ async function handleNuke(message, args) {
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`[Bot] Logged in as ${c.user.tag}`);
-  c.user.setActivity('24/7 | .p to play music');
+  c.user.setActivity('24/7 | .help for commands');
 
   await joinAllPermanentChannels();
 });
@@ -1061,6 +1090,12 @@ client.on(Events.MessageCreate, async (message) => {
   const command = args.shift().toLowerCase();
 
   switch (command) {
+    case 'help':
+      return handleHelp(message);
+
+    case 'helpsa':
+      return handleHelpSuperadmin(message);
+
     case 'linkga':
       return handleLinkga(message, args.join(' '));
 
