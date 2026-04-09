@@ -14,7 +14,6 @@ import {
 import OpenAI from 'openai';
 import play from 'play-dl';
 import ytSearch from 'yt-search';
-import ytdl from '@distube/ytdl-core';
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
@@ -25,36 +24,6 @@ function readEnv(name, placeholder) {
     return null;
   }
   return value;
-}
-
-function parseCookieHeader(cookieHeader) {
-  if (!cookieHeader) {
-    return [];
-  }
-
-  return cookieHeader
-    .split(';')
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => {
-      const separatorIndex = part.indexOf('=');
-      if (separatorIndex === -1) {
-        return null;
-      }
-
-      return {
-        domain:         '.youtube.com',
-        path:           '/',
-        secure:         true,
-        httpOnly:       false,
-        hostOnly:       false,
-        sameSite:       'no_restriction',
-        key:            part.slice(0, separatorIndex),
-        name:           part.slice(0, separatorIndex),
-        value:          part.slice(separatorIndex + 1),
-      };
-    })
-    .filter(Boolean);
 }
 
 const DISCORD_TOKEN   = readEnv('DISCORD_TOKEN', 'your-discord-bot-token-here');
@@ -70,7 +39,6 @@ const YOUTUBE_USER_AGENT    = readEnv(
   'YOUTUBE_USER_AGENT',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
 );
-const YOUTUBE_COOKIES       = parseCookieHeader(YOUTUBE_COOKIE);
 
 if (!DISCORD_TOKEN) {
   console.error('[Config] DISCORD_TOKEN is missing in .env. Add your Discord bot token and restart the bot.');
@@ -379,27 +347,27 @@ async function playNext(guildId) {
         inputType: stream.type || StreamType.Arbitrary,
       });
     } catch (streamError) {
-      if (!String(streamError.message).includes('Invalid URL')) {
+      const shouldRetryWithSearch = (
+        String(streamError.message).includes('Invalid URL')
+        || String(streamError.message).includes('This is not a YouTube Watch URL')
+      );
+
+      if (!shouldRetryWithSearch) {
         throw streamError;
       }
 
-      const agent = YOUTUBE_COOKIES.length > 0 ? ytdl.createAgent(YOUTUBE_COOKIES) : undefined;
+      const recoveredVideo = await searchYouTubeVideo(`${nextTrack.title} ${nextTrack.author}`);
+      if (!recoveredVideo?.url) {
+        throw streamError;
+      }
 
-      const fallbackStream = ytdl(streamUrl, {
-        filter:        'audioonly',
-        quality:       'highestaudio',
-        highWaterMark: 1 << 25,
-        agent,
-        playerClients: ['WEB', 'WEB_EMBEDDED', 'IOS', 'ANDROID', 'TV'],
-        requestOptions: {
-          headers: {
-            'user-agent': YOUTUBE_USER_AGENT,
-          },
-        },
+      streamInfo = await play.video_info(recoveredVideo.url);
+      const fallbackStream = await play.stream_from_info(streamInfo, {
+        discordPlayerCompatibility: true,
       });
 
-      resource = createAudioResource(fallbackStream, {
-        inputType: StreamType.Arbitrary,
+      resource = createAudioResource(fallbackStream.stream, {
+        inputType: fallbackStream.type || StreamType.Arbitrary,
       });
     }
 
