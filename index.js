@@ -963,7 +963,7 @@ async function sendTestBurst(message) {
   ].join('\n');
 
   const count = 3; // keep small for testing
-  const delayMs = 1500; // avoid hammering the API
+  const delayMs = 100; // avoid hammering the API
 
   for (let i = 0; i < count; i++) {
     await message.channel.send(alertMessage);
