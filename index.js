@@ -568,9 +568,10 @@ async function playNext(guildId) {
   }
 
   state.currentTrack = nextTrack;
+  let streamUrl = null;
 
   try {
-    let streamUrl = toYouTubeWatchUrl(nextTrack.url) || nextTrack.url;
+    streamUrl = toYouTubeWatchUrl(nextTrack.url) || nextTrack.url;
 
     if (!streamUrl || !/^https?:\/\//i.test(streamUrl)) {
       const recoveredVideo = await searchYouTubeVideo(`${nextTrack.title} ${nextTrack.author}`);
