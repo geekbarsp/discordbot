@@ -105,6 +105,7 @@ const openai = OPENAI_API_KEY
 // ─── Music state ────────────────────────────────────────────────────────────────
 
 const musicStates = new Map();
+const afkStates = new Map();
 
 play.setToken({
   useragent: [YOUTUBE_USER_AGENT],
@@ -1010,10 +1011,45 @@ async function handleResetChannel(message, args) {
   }
 }
 
+function formatAfkDuration(startedAt) {
+  const elapsedMs = Date.now() - startedAt;
+  const totalMinutes = Math.max(0, Math.floor(elapsedMs / 60_000));
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+
+  if (days > 0) parts.push(`${days}day${days === 1 ? '' : 's'}`);
+  if (hours > 0) parts.push(`${hours}hr${hours === 1 ? '' : 's'}`);
+  if (minutes > 0 || parts.length === 0) parts.push(`${minutes}min${minutes === 1 ? '' : 's'}`);
+
+  return parts.join(' ');
+}
+
+async function handleAfk(message) {
+  afkStates.set(message.author.id, {
+    guildId: message.guild.id,
+    startedAt: Date.now(),
+  });
+
+  await message.reply('You are now marked as AFK.');
+}
+
+async function handleRemoveAfk(message) {
+  if (!afkStates.has(message.author.id)) {
+    return message.reply('You are not currently marked as AFK.');
+  }
+
+  afkStates.delete(message.author.id);
+  await message.reply('Your AFK status has been removed.');
+}
+
 async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
     '`.help` - Show this command list.',
+    '`.afk` - Mark yourself as AFK.',
+    '`.rafk` - Remove your AFK status.',
     '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
     '`.spam` - Post one alert message in the current channel.',
     '`.reset <#channel>` - Clone a text channel, delete the old one, and post a reminder in the new channel. Admin only.',
@@ -1198,6 +1234,24 @@ client.on(Events.MessageCreate, async (message) => {
 
   const content = message.content.trim();
 
+  const afkMentionReplies = [];
+  for (const mentionedUser of message.mentions.users.values()) {
+    if (mentionedUser.id === message.author.id) {
+      continue;
+    }
+
+    const afkState = afkStates.get(mentionedUser.id);
+    if (!afkState || afkState.guildId !== message.guild.id) {
+      continue;
+    }
+
+    afkMentionReplies.push(`${mentionedUser} is AFK for ${formatAfkDuration(afkState.startedAt)}.`);
+  }
+
+  if (afkMentionReplies.length > 0) {
+    await message.reply(afkMentionReplies.join('\n'));
+  }
+
   // ── AI chat: triggered by messages starting with "link" ──────────────────────
   if (content.toLowerCase().startsWith('link ') || content.toLowerCase() === 'link') {
     const prompt = content.slice(4).trim();
@@ -1216,6 +1270,12 @@ client.on(Events.MessageCreate, async (message) => {
   switch (command) {
     case 'help':
       return handleHelp(message);
+
+    case 'afk':
+      return handleAfk(message);
+
+    case 'rafk':
+      return handleRemoveAfk(message);
 
     case 'helpsa':
       return handleHelpSuperadmin(message);
