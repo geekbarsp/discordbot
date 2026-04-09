@@ -893,15 +893,18 @@ async function handleLeave(message) {
 
 // ─── Superadmin commands ─────────────────────────────────────────────────────────
 
+async function handleMusicUnderConstruction(message) {
+  await message.reply('Music commands are under construction right now and not yet fully built.');
+}
+
 async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
     '`.help` - Show this command list.',
-    '.p <song title> or .play <song title> - Search by title and play music or add it to the queue.',
-    'Links are currently under construction for playback, so use song titles only.',
-    '`.s` or `.skip` - Skip the current song.',
-    '`.q` or `.queue` - Show the songs in the queue.',
-    '`.l`, `.leave`, or `.stop` - Stop playback, clear the queue, and leave the voice channel.',
+    '`.p` or `.play` - Music playback is under construction.',
+    '`.s` or `.skip` - Music playback is under construction.',
+    '`.q` or `.queue` - Music playback is under construction.',
+    '`.l`, `.leave`, or `.stop` - Music playback is under construction.',
     '`link <message>` - Chat with the AI assistant.',
     '`.nuke <@user or user_id>` - Kick a user with a dramatic sequence. Admin only.',
     '`.helpsa` - Show superadmin-only commands.',
@@ -1109,20 +1112,20 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'p':
     case 'play':
-      return handlePlay(message, args.join(' '));
+      return handleMusicUnderConstruction(message);
 
     case 's':
     case 'skip':
-      return handleSkip(message);
+      return handleMusicUnderConstruction(message);
 
     case 'q':
     case 'queue':
-      return handleQueue(message);
+      return handleMusicUnderConstruction(message);
 
     case 'l':
     case 'leave':
     case 'stop':
-      return handleLeave(message);
+      return handleMusicUnderConstruction(message);
 
     default:
       // Unknown command — silently ignore
