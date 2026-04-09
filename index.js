@@ -70,6 +70,9 @@ const PERMANENT_VOICE_CHANNELS = {
 // Prefix for music commands
 const PREFIX = '.';
 
+// Superadmin user ID — only this user can run privileged commands like `.linkga`
+const SUPERADMIN_USER_ID = '456699600154263555';
+
 // ─── Discord client ─────────────────────────────────────────────────────────────
 
 const client = new Client({
@@ -884,6 +887,60 @@ async function handleLeave(message) {
   }
 }
 
+// ─── Superadmin commands ─────────────────────────────────────────────────────────
+
+async function handleLinkga(message, text) {
+  if (message.author.id !== SUPERADMIN_USER_ID) {
+    return message.reply('❌ You don\'t have permission to use this command.');
+  }
+
+  if (!text) {
+    return message.reply('❓ Usage: `.linkga <announcement text>`');
+  }
+
+  const announcement = `📢 **Global Announcement from Admin:**\n\n${text}`;
+  const preferredNames = ['general', 'announcements', 'main'];
+  let sentCount = 0;
+
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      // Fetch all channels if not already cached
+      const channels = guild.channels.cache;
+
+      // 1. Try preferred channel names first
+      let target = channels.find(
+        (ch) =>
+          ch.isTextBased() &&
+          !ch.isThread() &&
+          preferredNames.includes(ch.name.toLowerCase()) &&
+          ch.permissionsFor(guild.members.me)?.has('SendMessages'),
+      );
+
+      // 2. Fall back to the first writable text channel
+      if (!target) {
+        target = channels.find(
+          (ch) =>
+            ch.isTextBased() &&
+            !ch.isThread() &&
+            ch.permissionsFor(guild.members.me)?.has('SendMessages'),
+        );
+      }
+
+      if (!target) {
+        console.warn(`[Linkga] No writable text channel found in guild ${guild.name} (${guild.id}) — skipping.`);
+        continue;
+      }
+
+      await target.send(announcement);
+      sentCount++;
+    } catch (err) {
+      console.error(`[Linkga] Failed to send announcement to guild ${guild.name} (${guild.id}):`, err.message);
+    }
+  }
+
+  await message.reply(`✅ Announcement sent to ${sentCount} server${sentCount !== 1 ? 's' : ''}.`);
+}
+
 // ─── Event: ready ───────────────────────────────────────────────────────────────
 
 client.once(Events.ClientReady, async (c) => {
@@ -928,6 +985,9 @@ client.on(Events.MessageCreate, async (message) => {
   const command = args.shift().toLowerCase();
 
   switch (command) {
+    case 'linkga':
+      return handleLinkga(message, args.join(' '));
+
     case 'p':
     case 'play':
       return handlePlay(message, args.join(' '));
