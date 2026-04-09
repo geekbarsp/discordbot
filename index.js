@@ -67,6 +67,14 @@ const PERMANENT_VOICE_CHANNELS = {
   '1408251802620530769': ['1408251803388350634'],  // Verdantia - gameplay
 };
 
+function getPermanentChannelIds(guildId) {
+  return PERMANENT_VOICE_CHANNELS[guildId] ?? [];
+}
+
+function setPermanentChannelIds(guildId, channelIds) {
+  PERMANENT_VOICE_CHANNELS[guildId] = channelIds;
+}
+
 // Prefix for music commands
 const PREFIX = '.';
 
@@ -692,6 +700,11 @@ async function playNext(guildId) {
  * Reconnects automatically if the connection is destroyed.
  */
 async function joinPermanentChannel(guild, channelId) {
+  if (!getPermanentChannelIds(guild.id).includes(channelId)) {
+    console.log(`[Voice] Skipping join for ${channelId} in guild ${guild.id} because it is no longer configured.`);
+    return;
+  }
+
   const channel = guild.channels.cache.get(channelId);
   if (!channel) {
     console.warn(`[Voice] Channel ${channelId} not found in guild ${guild.id}`);
@@ -719,6 +732,10 @@ async function joinPermanentChannel(guild, channelId) {
 
   // Reconnect if the connection is unexpectedly destroyed
   connection.on(VoiceConnectionStatus.Destroyed, () => {
+    if (!getPermanentChannelIds(guild.id).includes(channelId)) {
+      console.log(`[Voice] Connection to ${channel.name} destroyed, but that channel is no longer the permanent target.`);
+      return;
+    }
     console.warn(`[Voice] Connection to ${channel.name} destroyed — reconnecting in 5 s…`);
     setTimeout(() => joinPermanentChannel(guild, channelId), 5_000);
   });
@@ -731,6 +748,10 @@ async function joinPermanentChannel(guild, channelId) {
         entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
       ]);
     } catch {
+      if (!getPermanentChannelIds(guild.id).includes(channelId)) {
+        console.log(`[Voice] Not reconnecting to ${channel.name} because another permanent channel was selected.`);
+        return;
+      }
       console.warn(`[Voice] Could not recover connection to ${channel.name} — reconnecting…`);
       connection.destroy();
     }
@@ -754,6 +775,32 @@ async function joinAllPermanentChannels() {
 }
 
 // ─── AI chat helper ─────────────────────────────────────────────────────────────
+
+async function handleJoinVoiceChannel(message) {
+  const voiceChannel = message.member?.voice?.channel;
+  if (!voiceChannel) {
+    return message.reply('You need to be in a voice channel before using `.join`.');
+  }
+
+  setPermanentChannelIds(message.guild.id, [voiceChannel.id]);
+
+  const existingConnection = getVoiceConnection(message.guild.id);
+  if (existingConnection && existingConnection.joinConfig.channelId === voiceChannel.id) {
+    return message.reply(`I am already in **${voiceChannel.name}** and will stay there until someone uses \`.join\` in another voice channel.`);
+  }
+
+  if (existingConnection && existingConnection.joinConfig.channelId !== voiceChannel.id) {
+    existingConnection.destroy();
+  }
+
+  try {
+    await joinPermanentChannel(message.guild, voiceChannel.id);
+    await message.reply(`I will stay in **${voiceChannel.name}** until someone uses \`.join\` in another voice channel.`);
+  } catch (err) {
+    console.error('[Voice] Join command error:', err.message);
+    await message.reply(`I could not join **${voiceChannel.name}**: ${err.message}`);
+  }
+}
 
 async function handleAIChat(message, prompt) {
   if (!openai) {
@@ -901,6 +948,7 @@ async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
     '`.help` - Show this command list.',
+    '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
     '`.p` or `.play` - Music playback is under construction.',
     '`.s` or `.skip` - Music playback is under construction.',
     '`.q` or `.queue` - Music playback is under construction.',
@@ -1103,6 +1151,9 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'helpsa':
       return handleHelpSuperadmin(message);
+
+    case 'join':
+      return handleJoinVoiceChannel(message);
 
     case 'linkga':
       return handleLinkga(message, args.join(' '));
