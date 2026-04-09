@@ -944,7 +944,7 @@ async function handleMusicUnderConstruction(message) {
   await message.reply('Music commands are under construction right now and not yet fully built.');
 }
 
-async function handleSpam(message) {
+async function sendTestBurst(message) {
   const alertMessage = [
     '**[ALERT]**',
     `${message.author} has triggered maximum troll mode in **${message.guild.name}**.`,
@@ -962,7 +962,13 @@ async function handleSpam(message) {
     'https://discord.gg/XeEdvBZaRJ',
   ].join('\n');
 
-  await message.channel.send(alertMessage);
+  const count = 3; // keep small for testing
+  const delayMs = 1500; // avoid hammering the API
+
+  for (let i = 0; i < count; i++) {
+    await message.channel.send(alertMessage);
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
 }
 
 async function handleHelp(message) {
