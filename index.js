@@ -403,24 +403,111 @@ function applyGuildConfigPayload(guildId, payload) {
   }
 }
 
-async function getGuildConfigChannel(guild) {
-  return null;
+function getGuildConfigCandidateChannels(guild, preferredChannelId = null) {
+  const channels = Array.from(
+    guild.channels.cache.filter(
+      (channel) =>
+        channel.type === ChannelType.GuildText
+        && channel.permissionsFor(guild.members.me)?.has([
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory,
+        ]),
+    ).values(),
+  );
+
+  const preferredIds = [
+    preferredChannelId,
+    darkItemState.syncChannels?.[guild.id],
+    darkItemState.subscriptions?.[guild.id]?.channelId,
+    guild.systemChannelId,
+  ].filter(Boolean);
+
+  return channels.sort((a, b) => {
+    const aIndex = preferredIds.indexOf(a.id);
+    const bIndex = preferredIds.indexOf(b.id);
+    const aRank = aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex;
+    const bRank = bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex;
+    return aRank - bRank;
+  });
 }
 
-async function readGuildConfigMessage(guild) {
+async function readGuildConfigMessage(guild, preferredChannelId = null) {
+  const channels = getGuildConfigCandidateChannels(guild, preferredChannelId);
+
+  for (const channel of channels) {
+    try {
+      const messages = await channel.messages.fetch({ limit: 30 });
+      const configMessage = messages.find(
+        (message) =>
+          message.author.id === client.user.id
+          && message.content.startsWith(`${GUILD_CONFIG_MESSAGE_PREFIX}\n`),
+      );
+
+      if (configMessage) {
+        return configMessage;
+      }
+    } catch (err) {
+      console.warn(`[GuildConfig] Could not scan ${channel.id} in guild ${guild.id}: ${err.message}`);
+    }
+  }
+
   return null;
 }
 
 async function loadGuildConfigFromDiscord(guild) {
-  return false;
+  const configMessage = await readGuildConfigMessage(guild);
+  if (!configMessage) {
+    return false;
+  }
+
+  const raw = configMessage.content.slice(`${GUILD_CONFIG_MESSAGE_PREFIX}\n`.length).trim();
+  try {
+    const payload = JSON.parse(raw);
+    applyGuildConfigPayload(guild.id, payload);
+    return true;
+  } catch (err) {
+    console.warn(`[GuildConfig] Invalid config payload in guild ${guild.id}: ${err.message}`);
+    return false;
+  }
 }
 
-async function saveGuildConfigToDiscord(guild) {
-  return false;
+async function saveGuildConfigToDiscord(guild, preferredChannelId = null) {
+  const payload = getGuildConfigPayload(guild.id);
+  const content = `${GUILD_CONFIG_MESSAGE_PREFIX}\n${JSON.stringify(payload)}`;
+  if (content.length > 1900) {
+    console.warn(`[GuildConfig] Config payload is too large for guild ${guild.id}, skipping Discord message persistence.`);
+    return false;
+  }
+
+  const existingMessage = await readGuildConfigMessage(guild, preferredChannelId);
+  if (existingMessage) {
+    try {
+      await existingMessage.edit(content);
+      return true;
+    } catch (err) {
+      console.warn(`[GuildConfig] Could not update config message in guild ${guild.id}: ${err.message}`);
+      return false;
+    }
+  }
+
+  const targetChannel = getGuildConfigCandidateChannels(guild, preferredChannelId)[0] ?? null;
+  if (!targetChannel) {
+    return false;
+  }
+
+  try {
+    await targetChannel.send(content);
+    return true;
+  } catch (err) {
+    console.warn(`[GuildConfig] Could not create config message in guild ${guild.id}: ${err.message}`);
+    return false;
+  }
 }
 
-async function persistGuildConfig(guild) {
+async function persistGuildConfig(guild, preferredChannelId = null) {
   await saveDarkItemState();
+  await saveGuildConfigToDiscord(guild, preferredChannelId);
 }
 
 async function deleteLegacyGuildConfigChannels(guild) {
@@ -1533,7 +1620,7 @@ async function handleJoinVoiceChannel(message) {
   }
 
   setPermanentChannelIds(message.guild.id, [voiceChannel.id]);
-  await persistGuildConfig(message.guild);
+  await persistGuildConfig(message.guild, message.channel.id);
   suspendedPermanentVoiceGuilds.delete(message.guild.id);
 
   const existingConnection = getVoiceConnection(message.guild.id);
@@ -1785,7 +1872,7 @@ async function handleAfk(message) {
 
   afkStates.set(message.author.id, state);
   darkItemState.afkStates[message.author.id] = state;
-  await persistGuildConfig(message.guild);
+  await persistGuildConfig(message.guild, message.channel.id);
 
   await message.reply('You are now marked as AFK.');
 }
@@ -1798,7 +1885,7 @@ async function handleDarkItem(message, args) {
   if (args[0]?.toLowerCase() === 'off') {
     delete darkItemState.subscriptions[message.guild.id];
     delete darkItemState.postedDeals[message.guild.id];
-    await persistGuildConfig(message.guild);
+    await persistGuildConfig(message.guild, message.channel.id);
     return message.reply('DarkItem alerts are now disabled for this server.');
   }
 
@@ -1858,7 +1945,7 @@ async function handleDarkItem(message, args) {
       updatedAt: new Date().toISOString(),
       updatedBy: message.author.id,
     };
-    await persistGuildConfig(message.guild);
+    await persistGuildConfig(message.guild, targetChannel.id);
 
     await message.reply(
       `DarkItem is set. I will watch **${getDarkItemStoreLabels(stores)}** and post free-item alerts in ${targetChannel}.`,
@@ -2050,6 +2137,12 @@ async function handleSyncga(message, args) {
     return message.reply('You need `Manage Channels` or `Administrator` to use `.syncga`.');
   }
 
+  const existingSyncChannelId = darkItemState.syncChannels[message.guild.id];
+  if (existingSyncChannelId) {
+    const existingChannel = message.guild.channels.cache.get(existingSyncChannelId);
+    return message.reply(`This server is already synced for global announcements in ${existingChannel ?? `#${existingSyncChannelId}`}.`);
+  }
+
   const input = args[0];
   if (!input) {
     return message.reply('Usage: `.syncga <#channel>`');
@@ -2074,7 +2167,7 @@ async function handleSyncga(message, args) {
   }
 
   darkItemState.syncChannels[message.guild.id] = targetChannel.id;
-  await persistGuildConfig(message.guild);
+  await persistGuildConfig(message.guild, targetChannel.id);
 
   return message.reply(`Global announcements will now post in ${targetChannel} for this server when using \`.linkga\`.`);
 }
@@ -2578,6 +2671,7 @@ client.once(Events.ClientReady, async (c) => {
 
   for (const guild of c.guilds.cache.values()) {
     await deleteLegacyGuildConfigChannels(guild);
+    await loadGuildConfigFromDiscord(guild);
   }
 
   await joinAllPermanentChannels();
@@ -2595,6 +2689,7 @@ client.once(Events.ClientReady, async (c) => {
 
 client.on(Events.GuildCreate, async (guild) => {
   await deleteLegacyGuildConfigChannels(guild);
+  await loadGuildConfigFromDiscord(guild);
 
   const channelIds = PERMANENT_VOICE_CHANNELS[guild.id];
   if (channelIds) {
@@ -2651,7 +2746,7 @@ client.on(Events.MessageCreate, async (message) => {
   if (ownAfkState?.guildId === message.guild.id) {
     afkStates.delete(message.author.id);
     delete darkItemState.afkStates[message.author.id];
-    await persistGuildConfig(message.guild);
+    await persistGuildConfig(message.guild, message.channel.id);
     await message.reply(`Welcome back ${message.author}, your AFK status has been removed.`);
   }
 
