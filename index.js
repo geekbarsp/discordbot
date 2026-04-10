@@ -1754,66 +1754,93 @@ async function handleDarkItem(message, args) {
   }
 }
 
-async function handleDarkItemHelp(message) {
-  const helpText = [
-    '**DarkItem Commands**',
-    '`.darkitem` - Start setup for free-item alerts.',
-    '`.darkitem status` - Show the current DarkItem alert settings.',
-    '`.darkitem off` - Disable DarkItem alerts for this server.',
-    '`.darkitemhelp` - Show this DarkItem command list.',
-  ].join('\n');
-
-  await message.reply(helpText);
-}
-
-async function handleMusicHelp(message) {
-  const helpText = [
-    '**Music Commands**',
-    '`.p` or `.play` - Music playback is under construction.',
-    '`.s` or `.skip` - Music playback is under construction.',
-    '`.q` or `.queue` - Music playback is under construction.',
-    '`.l`, `.leave`, or `.stop` - Music playback is under construction.',
-  ].join('\n');
-
-  await message.reply(helpText);
-}
-
-async function handleTrollUserHelp(message) {
+async function sendHelpEmbed(message, title, description, lines, color = 0x2563eb) {
   const embed = new EmbedBuilder()
-    .setColor(0xef4444)
-    .setTitle('Troll User Commands')
-    .setDescription('Fun avatar-based action commands for personal use.')
+    .setColor(color)
+    .setTitle(title)
+    .setDescription(description)
     .addFields(
-      { name: '.slap @user', value: 'Slap the mentioned user.', inline: false },
-      { name: '.kick @user', value: 'Kick the mentioned user.', inline: false },
-      { name: '.throw @user', value: 'Throw the mentioned user.', inline: false },
-      { name: '.trolluserhelp', value: 'Show this help menu.', inline: false },
+      lines.map((line) => {
+        const [name, value] = line.split(' - ');
+        return {
+          name,
+          value: value || 'No description provided.',
+          inline: false,
+        };
+      }),
     )
-    .setFooter({ text: 'Target a user mention to generate an image.' });
+    .setFooter({ text: 'Dark Bot command guide' });
 
   await message.reply({ embeds: [embed] });
 }
 
-async function handleHelp(message) {
-  const helpText = [
-    '**Bot Commands**',
-    '`.help` - Show this command list.',
-    '`.afk` - Mark yourself as AFK.',
-    '`.darkitemhelp` - Show DarkItem-specific commands.',
-    '`.musichelp` - Show music-specific commands.',
-    '`.trolluserhelp` - Show troll user commands.',
-    '`.purge <count>` - Delete a number of recent messages. Manage Messages only.',
-    '`.serverstat` - Create or refresh the server statistics voice channels. Admin only.',
-    '`.ngaming`, `.nstudy`, `.nfriendlyorg`, `.npersonal`, `.nhackergroup` - Two-step admin-only server layout presets.',
-    '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
-    '`.spam` - Post one alert message in the current channel.',
-    '`.reset <#channel>` - Clone a text channel, delete the old one, and post a reminder in the new channel. Admin only.',
-    '`link <message>` - Chat with the AI assistant.',
-    '`.nuke <@user or user_id>` - Kick a user with a dramatic sequence. Admin only.',
-    '`.helpsa` - Show superadmin-only commands.',
-  ].join('\n');
+async function handleDarkItemHelp(message) {
+  await sendHelpEmbed(
+    message,
+    'DarkItem Commands',
+    'Free-item alert setup and management commands.',
+    [
+      '`.darkitem` - Start setup for free-item alerts.',
+      '`.darkitem status` - Show the current DarkItem alert settings.',
+      '`.darkitem off` - Disable DarkItem alerts for this server.',
+    ],
+    0x22c55e,
+  );
+}
 
-  await message.reply(helpText);
+async function handleMusicHelp(message) {
+  await sendHelpEmbed(
+    message,
+    'Music Commands',
+    'Music playback is still under construction.',
+    [
+      '`.p` or `.play` - Music playback is under construction.',
+      '`.s` or `.skip` - Music playback is under construction.',
+      '`.q` or `.queue` - Music playback is under construction.',
+      '`.l`, `.leave`, or `.stop` - Music playback is under construction.',
+    ],
+    0xf59e0b,
+  );
+}
+
+async function handleTrollUserHelp(message) {
+  await sendHelpEmbed(
+    message,
+    'Troll User Commands',
+    'Fun avatar-based action commands for personal use.',
+    [
+      '`.slap @user` - Slap the mentioned user.',
+      '`.kick @user` - Kick the mentioned user.',
+      '`.throw @user` - Throw the mentioned user.',
+      '`.trolluserhelp` - Show this help menu.',
+    ],
+    0xef4444,
+  );
+}
+
+async function handleHelp(message) {
+  await sendHelpEmbed(
+    message,
+    'Bot Commands',
+    'Main command list for Dark Bot.',
+    [
+      '`.help` - Show this command list.',
+      '`.afk` - Mark yourself as AFK.',
+      '`.darkitemhelp` - Show DarkItem-specific commands.',
+      '`.musichelp` - Show music-specific commands.',
+      '`.trolluserhelp` - Show troll user commands.',
+      '`.purge <count>` - Delete a number of recent messages. Manage Messages only.',
+      '`.serverstat` - Create or refresh the server statistics voice channels. Admin only.',
+      '`.ngaming`, `.nstudy`, `.nfriendlyorg`, `.npersonal`, `.nhackergroup` - Two-step admin-only server layout presets.',
+      '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
+      '`.spam` - Post one alert message in the current channel.',
+      '`.reset <#channel>` - Clone a text channel, delete the old one, and post a reminder in the new channel. Admin only.',
+      '`link <message>` - Chat with the AI assistant.',
+      '`.nuke <@user or user_id>` - Kick a user with a dramatic sequence. Admin only.',
+      '`.helpsa` - Show superadmin-only commands.',
+    ],
+    0x2563eb,
+  );
 }
 
 async function handleHelpSuperadmin(message) {
@@ -1821,14 +1848,17 @@ async function handleHelpSuperadmin(message) {
     return message.reply('❌ You do not have permission to use this command.');
   }
 
-  const helpText = [
-    '**Superadmin Commands**',
-    '`.linkga <announcement text>` - Send a global announcement to every server the bot is in.',
-    '`.syncga <#channel>` - Save this server channel for future global announcements.',
-    '`.saclear <#channel>` - Delete this bot\'s messages from the selected channel.',
-  ].join('\n');
-
-  await message.reply(helpText);
+  await sendHelpEmbed(
+    message,
+    'Superadmin Commands',
+    'Restricted commands for global bot management.',
+    [
+      '`.linkga <announcement text>` - Send a global announcement to every server the bot is in.',
+      '`.syncga <#channel>` - Save this server channel for future global announcements.',
+      '`.saclear <#channel>` - Delete this bot\'s messages from the selected channel.',
+    ],
+    0x7c3aed,
+  );
 }
 
 async function handleSuperadminClear(message, args) {
