@@ -159,6 +159,7 @@ const afkStates = new Map();
 const pendingServerLayouts = new Map();
 const serverStatSnapshots = new Map();
 const pendingServerStatUpdates = new Map();
+const pendingPermanentVoiceJoins = new Map();
 
 play.setToken({
   useragent: [YOUTUBE_USER_AGENT],
@@ -667,6 +668,31 @@ async function ensureMusicConnection(voiceChannel) {
   return state;
 }
 
+async function connectVoiceChannel(channel) {
+  let connection = getVoiceConnection(channel.guild.id);
+
+  if (connection) {
+    if (connection.joinConfig.channelId !== channel.id) {
+      connection.rejoin({
+        channelId: channel.id,
+        selfDeaf: true,
+        selfMute: false,
+      });
+    }
+  } else {
+    connection = joinVoiceChannel({
+      channelId:      channel.id,
+      guildId:        channel.guild.id,
+      adapterCreator: channel.guild.voiceAdapterCreator,
+      selfDeaf:       true,
+      selfMute:       false,
+    });
+  }
+
+  await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+  return connection;
+}
+
 async function playNext(guildId) {
   const state = musicStates.get(guildId);
   if (!state) return;
@@ -759,59 +785,79 @@ async function joinPermanentChannel(guild, channelId) {
     return;
   }
 
+  const existingJoin = pendingPermanentVoiceJoins.get(guild.id);
+  if (existingJoin?.channelId === channelId) {
+    return existingJoin.promise;
+  }
+
   const channel = guild.channels.cache.get(channelId);
   if (!channel) {
     console.warn(`[Voice] Channel ${channelId} not found in guild ${guild.id}`);
     return;
   }
 
-  console.log(`[Voice] Joining permanent channel: ${channel.name} (${channelId})`);
+  const joinTask = (async () => {
+    console.log(`[Voice] Joining permanent channel: ${channel.name} (${channelId})`);
 
-  const connection = joinVoiceChannel({
-    channelId:      channel.id,
-    guildId:        guild.id,
-    adapterCreator: guild.voiceAdapterCreator,
-    selfDeaf:       true,
-    selfMute:       false,
-  });
+    let connection;
+    try {
+      connection = await connectVoiceChannel(channel);
+      console.log(`[Voice] Connected to ${channel.name}`);
+    } catch (err) {
+      console.error(`[Voice] Failed to connect to ${channel.name}:`, err.message);
+      const activeConnection = getVoiceConnection(guild.id);
+      if (activeConnection?.joinConfig.channelId === channel.id) {
+        activeConnection.destroy();
+      }
+      setTimeout(() => {
+        if (getPermanentChannelIds(guild.id).includes(channelId)) {
+          void joinPermanentChannel(guild, channelId);
+        }
+      }, 10_000);
+      return;
+    } finally {
+      if (pendingPermanentVoiceJoins.get(guild.id)?.promise === joinTask) {
+        pendingPermanentVoiceJoins.delete(guild.id);
+      }
+    }
 
-  try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
-    console.log(`[Voice] Connected to ${channel.name}`);
-  } catch (err) {
-    console.error(`[Voice] Failed to connect to ${channel.name}:`, err.message);
-    connection.destroy();
-    return;
-  }
-
-  // Reconnect if the connection is unexpectedly destroyed
-  connection.on(VoiceConnectionStatus.Destroyed, () => {
-    if (!getPermanentChannelIds(guild.id).includes(channelId)) {
-      console.log(`[Voice] Connection to ${channel.name} destroyed, but that channel is no longer the permanent target.`);
+    if (connection._permanentVoiceHandlersAttached) {
       return;
     }
-    console.warn(`[Voice] Connection to ${channel.name} destroyed — reconnecting in 5 s…`);
-    setTimeout(() => joinPermanentChannel(guild, channelId), 5_000);
-  });
 
-  connection.on(VoiceConnectionStatus.Disconnected, async () => {
-    try {
-      // Try to recover the connection first (e.g. network blip)
-      await Promise.race([
-        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
-      ]);
-    } catch {
+    connection._permanentVoiceHandlersAttached = true;
+
+    connection.on(VoiceConnectionStatus.Destroyed, () => {
       if (!getPermanentChannelIds(guild.id).includes(channelId)) {
-        console.log(`[Voice] Not reconnecting to ${channel.name} because another permanent channel was selected.`);
+        console.log(`[Voice] Connection to ${channel.name} destroyed, but that channel is no longer the permanent target.`);
         return;
       }
-      console.warn(`[Voice] Could not recover connection to ${channel.name} — reconnecting…`);
-      connection.destroy();
-    }
-  });
-}
+      console.warn(`[Voice] Connection to ${channel.name} destroyed, reconnecting in 10 seconds.`);
+      setTimeout(() => {
+        void joinPermanentChannel(guild, channelId);
+      }, 10_000);
+    });
 
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      try {
+        await Promise.race([
+          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+        ]);
+      } catch {
+        if (!getPermanentChannelIds(guild.id).includes(channelId)) {
+          console.log(`[Voice] Not reconnecting to ${channel.name} because another permanent channel was selected.`);
+          return;
+        }
+        console.warn(`[Voice] Could not recover connection to ${channel.name}, retrying join.`);
+        connection.destroy();
+      }
+    });
+  })();
+
+  pendingPermanentVoiceJoins.set(guild.id, { channelId, promise: joinTask });
+  return joinTask;
+}
 /**
  * Join all configured permanent voice channels for every guild the bot is in.
  */
