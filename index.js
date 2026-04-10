@@ -2216,7 +2216,6 @@ async function handleConfessionHelp(message) {
     'Confession Commands',
     'Anonymous confession setup and posting commands.',
     [
-      '`.confessionhelp` - Show confession-specific commands.',
       '`.confessset <#channel>` - Set the confession channel and post the sticky prompt. Admin or Manage Channels only.',
       '`.confess <message>` - Post an anonymous confession through the bot.',
     ],
