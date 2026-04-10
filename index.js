@@ -160,6 +160,8 @@ const pendingServerLayouts = new Map();
 const serverStatSnapshots = new Map();
 const pendingServerStatUpdates = new Map();
 const pendingPermanentVoiceJoins = new Map();
+const suspendedPermanentVoiceGuilds = new Set();
+let permanentVoiceAutoJoinDisabled = false;
 
 play.setToken({
   useragent: [YOUTUBE_USER_AGENT],
@@ -693,6 +695,23 @@ async function connectVoiceChannel(channel) {
   return connection;
 }
 
+function isIpDiscoveryError(error) {
+  return String(error?.message || error || '').includes('Cannot perform IP discovery - socket closed');
+}
+
+function disablePermanentVoiceAutoJoin(reason) {
+  if (!permanentVoiceAutoJoinDisabled) {
+    console.warn(`[Voice] Permanent auto-join disabled: ${reason}`);
+  }
+
+  permanentVoiceAutoJoinDisabled = true;
+
+  for (const guildId of Object.keys(PERMANENT_VOICE_CHANNELS)) {
+    suspendedPermanentVoiceGuilds.add(guildId);
+    getVoiceConnection(guildId)?.destroy();
+  }
+}
+
 async function playNext(guildId) {
   const state = musicStates.get(guildId);
   if (!state) return;
@@ -779,7 +798,14 @@ async function playNext(guildId) {
  * Attempt to join a voice channel and keep the connection alive.
  * Reconnects automatically if the connection is destroyed.
  */
-async function joinPermanentChannel(guild, channelId) {
+async function joinPermanentChannel(guild, channelId, options = {}) {
+  const { manual = false } = options;
+
+  if (!manual && (permanentVoiceAutoJoinDisabled || suspendedPermanentVoiceGuilds.has(guild.id))) {
+    console.warn(`[Voice] Auto-join skipped for guild ${guild.id} because permanent voice is suspended.`);
+    return;
+  }
+
   if (!getPermanentChannelIds(guild.id).includes(channelId)) {
     console.log(`[Voice] Skipping join for ${channelId} in guild ${guild.id} because it is no longer configured.`);
     return;
@@ -803,12 +829,24 @@ async function joinPermanentChannel(guild, channelId) {
     try {
       connection = await connectVoiceChannel(channel);
       console.log(`[Voice] Connected to ${channel.name}`);
+      if (manual) {
+        suspendedPermanentVoiceGuilds.delete(guild.id);
+      }
     } catch (err) {
       console.error(`[Voice] Failed to connect to ${channel.name}:`, err.message);
       const activeConnection = getVoiceConnection(guild.id);
       if (activeConnection?.joinConfig.channelId === channel.id) {
         activeConnection.destroy();
       }
+
+      if (isIpDiscoveryError(err)) {
+        suspendedPermanentVoiceGuilds.add(guild.id);
+        if (!manual) {
+          disablePermanentVoiceAutoJoin('host networking closed the Discord voice UDP socket during IP discovery');
+        }
+        return;
+      }
+
       setTimeout(() => {
         if (getPermanentChannelIds(guild.id).includes(channelId)) {
           void joinPermanentChannel(guild, channelId);
@@ -883,6 +921,7 @@ async function handleJoinVoiceChannel(message) {
   }
 
   setPermanentChannelIds(message.guild.id, [voiceChannel.id]);
+  suspendedPermanentVoiceGuilds.delete(message.guild.id);
 
   const existingConnection = getVoiceConnection(message.guild.id);
   if (existingConnection && existingConnection.joinConfig.channelId === voiceChannel.id) {
@@ -894,7 +933,7 @@ async function handleJoinVoiceChannel(message) {
   }
 
   try {
-    await joinPermanentChannel(message.guild, voiceChannel.id);
+    await joinPermanentChannel(message.guild, voiceChannel.id, { manual: true });
     await message.reply(`I will stay in **${voiceChannel.name}** until someone uses \`.join\` in another voice channel.`);
   } catch (err) {
     console.error('[Voice] Join command error:', err.message);
@@ -1760,6 +1799,9 @@ client.on('error', (err) => {
 });
 
 process.on('unhandledRejection', (reason) => {
+  if (isIpDiscoveryError(reason)) {
+    disablePermanentVoiceAutoJoin('Discord voice IP discovery is failing on this host');
+  }
   console.error('[Unhandled Rejection]', reason);
 });
 
