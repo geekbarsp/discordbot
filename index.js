@@ -1759,8 +1759,12 @@ async function handleSuperadminClear(message, args) {
 }
 
 async function handleSyncga(message, args) {
-  if (message.author.id !== SUPERADMIN_USER_ID) {
-    return message.reply('You do not have permission to use this command.');
+  const memberPermissions = message.member?.permissions;
+  if (
+    !memberPermissions?.has(PermissionFlagsBits.Administrator)
+    && !memberPermissions?.has(PermissionFlagsBits.ManageChannels)
+  ) {
+    return message.reply('You need `Manage Channels` or `Administrator` to use `.syncga`.');
   }
 
   const input = args[0];
