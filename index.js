@@ -63,11 +63,12 @@ if (!YOUTUBE_COOKIE) {
 }
 
 // Guild ID → array of voice channel IDs the bot should permanently occupy.
-const PERMANENT_VOICE_CHANNELS = {
+const DEFAULT_PERMANENT_VOICE_CHANNELS = {
   '940723783491272754':  ['952814235803611167'],   // Hideout - chikahan
   '1423247354491965452': ['1423247355423096845'],  // Hideout with Ashe - General
   '1408251802620530769': ['1408251803388350634'],  // Verdantia - gameplay
 };
+const PERMANENT_VOICE_CHANNELS = { ...DEFAULT_PERMANENT_VOICE_CHANNELS };
 
 function getPermanentChannelIds(guildId) {
   return PERMANENT_VOICE_CHANNELS[guildId] ?? [];
@@ -92,6 +93,8 @@ const SERVER_STAT_CHANNEL_LABELS = {
 const DARKITEM_DATA_FILE = new URL('./darkitem-data.json', import.meta.url);
 const DARKITEM_POLL_INTERVAL_MS = 15 * 60 * 1000;
 const DARKITEM_PROMPT_TIMEOUT_MS = 60 * 1000;
+const GUILD_CONFIG_CHANNEL_NAME = 'dark-bot-config';
+const GUILD_CONFIG_MESSAGE_PREFIX = 'DARK_BOT_CONFIG_V1';
 const TROLL_USER_TEMPLATES = {
   slap: {
     file: new URL('./.slap.png', import.meta.url),
@@ -339,6 +342,155 @@ async function saveDarkItemState() {
   await writeFile(DARKITEM_DATA_FILE, JSON.stringify(darkItemState, null, 2));
 }
 
+function getGuildConfigPayload(guildId) {
+  const subscription = darkItemState.subscriptions?.[guildId] ?? null;
+  const postedDealIds = Object.keys(darkItemState.postedDeals?.[guildId] ?? {}).slice(-100);
+  const syncChannelId = darkItemState.syncChannels?.[guildId] ?? null;
+  const permanentVoiceChannelIds = getPermanentChannelIds(guildId);
+
+  return {
+    darkItemSubscription: subscription,
+    postedDealIds,
+    syncChannelId,
+    permanentVoiceChannelIds,
+  };
+}
+
+function applyGuildConfigPayload(guildId, payload) {
+  if (payload?.darkItemSubscription) {
+    darkItemState.subscriptions[guildId] = payload.darkItemSubscription;
+  }
+
+  if (Array.isArray(payload?.postedDealIds) && payload.postedDealIds.length > 0) {
+    darkItemState.postedDeals[guildId] = Object.fromEntries(
+      payload.postedDealIds.map((dealId) => [dealId, new Date().toISOString()]),
+    );
+  }
+
+  if (payload?.syncChannelId) {
+    darkItemState.syncChannels[guildId] = payload.syncChannelId;
+  }
+
+  if (Array.isArray(payload?.permanentVoiceChannelIds)) {
+    setPermanentChannelIds(guildId, payload.permanentVoiceChannelIds);
+  }
+}
+
+async function getGuildConfigChannel(guild) {
+  const existing = guild.channels.cache.find(
+    (channel) =>
+      channel.type === ChannelType.GuildText
+      && channel.name === GUILD_CONFIG_CHANNEL_NAME,
+  );
+
+  if (existing) {
+    return existing;
+  }
+
+  if (!guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return null;
+  }
+
+  try {
+    return await guild.channels.create({
+      name: GUILD_CONFIG_CHANNEL_NAME,
+      type: ChannelType.GuildText,
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionFlagsBits.ViewChannel],
+        },
+        {
+          id: guild.members.me.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageMessages,
+          ],
+        },
+      ],
+    });
+  } catch (err) {
+    console.warn(`[GuildConfig] Could not create config channel in guild ${guild.id}: ${err.message}`);
+    return null;
+  }
+}
+
+async function readGuildConfigMessage(guild) {
+  const channel = guild.channels.cache.find(
+    (candidate) =>
+      candidate.type === ChannelType.GuildText
+      && candidate.name === GUILD_CONFIG_CHANNEL_NAME,
+  );
+
+  if (!channel) {
+    return null;
+  }
+
+  try {
+    const messages = await channel.messages.fetch({ limit: 20 });
+    return messages.find(
+      (message) =>
+        message.author.id === client.user.id
+        && message.content.startsWith(`${GUILD_CONFIG_MESSAGE_PREFIX}\n`),
+    ) ?? null;
+  } catch (err) {
+    console.warn(`[GuildConfig] Could not read config message in guild ${guild.id}: ${err.message}`);
+    return null;
+  }
+}
+
+async function loadGuildConfigFromDiscord(guild) {
+  const configMessage = await readGuildConfigMessage(guild);
+  if (!configMessage) {
+    return false;
+  }
+
+  const raw = configMessage.content.slice(`${GUILD_CONFIG_MESSAGE_PREFIX}\n`.length).trim();
+  try {
+    const payload = JSON.parse(raw);
+    applyGuildConfigPayload(guild.id, payload);
+    return true;
+  } catch (err) {
+    console.warn(`[GuildConfig] Invalid config payload in guild ${guild.id}: ${err.message}`);
+    return false;
+  }
+}
+
+async function saveGuildConfigToDiscord(guild) {
+  const channel = await getGuildConfigChannel(guild);
+  if (!channel) {
+    return false;
+  }
+
+  const payload = getGuildConfigPayload(guild.id);
+  const content = `${GUILD_CONFIG_MESSAGE_PREFIX}\n${JSON.stringify(payload)}`;
+
+  if (content.length > 1900) {
+    console.warn(`[GuildConfig] Config payload is too large for guild ${guild.id}, skipping Discord persistence.`);
+    return false;
+  }
+
+  const existingMessage = await readGuildConfigMessage(guild);
+  try {
+    if (existingMessage) {
+      await existingMessage.edit(content);
+    } else {
+      await channel.send(content);
+    }
+    return true;
+  } catch (err) {
+    console.warn(`[GuildConfig] Could not save config to Discord in guild ${guild.id}: ${err.message}`);
+    return false;
+  }
+}
+
+async function persistGuildConfig(guild) {
+  await saveDarkItemState();
+  await saveGuildConfigToDiscord(guild);
+}
+
 function normalizeDarkItemStoreChoice(value) {
   const normalized = String(value || '').trim().toLowerCase();
 
@@ -412,6 +564,11 @@ async function markDarkItemDealPosted(guildId, dealId) {
   }
 
   await saveDarkItemState();
+
+  const guild = client.guilds.cache.get(guildId);
+  if (guild) {
+    await saveGuildConfigToDiscord(guild);
+  }
 }
 
 function getDarkItemImage(images) {
@@ -1427,6 +1584,7 @@ async function handleJoinVoiceChannel(message) {
   }
 
   setPermanentChannelIds(message.guild.id, [voiceChannel.id]);
+  await persistGuildConfig(message.guild);
   suspendedPermanentVoiceGuilds.delete(message.guild.id);
 
   const existingConnection = getVoiceConnection(message.guild.id);
@@ -1687,7 +1845,7 @@ async function handleDarkItem(message, args) {
   if (args[0]?.toLowerCase() === 'off') {
     delete darkItemState.subscriptions[message.guild.id];
     delete darkItemState.postedDeals[message.guild.id];
-    await saveDarkItemState();
+    await persistGuildConfig(message.guild);
     return message.reply('DarkItem alerts are now disabled for this server.');
   }
 
@@ -1747,7 +1905,7 @@ async function handleDarkItem(message, args) {
       updatedAt: new Date().toISOString(),
       updatedBy: message.author.id,
     };
-    await saveDarkItemState();
+    await persistGuildConfig(message.guild);
 
     await message.reply(
       `DarkItem is set. I will watch **${getDarkItemStoreLabels(stores)}** and post free-item alerts in ${targetChannel}.`,
@@ -1963,9 +2121,9 @@ async function handleSyncga(message, args) {
   }
 
   darkItemState.syncChannels[message.guild.id] = targetChannel.id;
-  await saveDarkItemState();
+  await persistGuildConfig(message.guild);
 
-  return message.reply(`Global announcements will now post in ${targetChannel} for this server when using \`Global Announcement\`.`);
+  return message.reply(`Global announcements will now post in ${targetChannel} for this server when using \`.linkga\`.`);
 }
 
 async function handleLinkga(message, text) {
@@ -2465,6 +2623,22 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`[Bot] Logged in as ${c.user.tag}`);
   c.user.setActivity('24/7 | .help for commands');
 
+  for (const guild of c.guilds.cache.values()) {
+    const loadedFromDiscord = await loadGuildConfigFromDiscord(guild);
+    if (!loadedFromDiscord) {
+      const hasLocalConfig = Boolean(
+        darkItemState.subscriptions[guild.id]
+        || darkItemState.syncChannels[guild.id]
+        || darkItemState.postedDeals[guild.id]
+        || DEFAULT_PERMANENT_VOICE_CHANNELS[guild.id],
+      );
+
+      if (hasLocalConfig) {
+        await saveGuildConfigToDiscord(guild);
+      }
+    }
+  }
+
   await joinAllPermanentChannels();
   await pollDarkItemDeals();
   setInterval(() => {
@@ -2479,6 +2653,8 @@ client.once(Events.ClientReady, async (c) => {
 // ─── Event: guildCreate (join new guilds) ────────────────────────────────────────
 
 client.on(Events.GuildCreate, async (guild) => {
+  await loadGuildConfigFromDiscord(guild);
+
   const channelIds = PERMANENT_VOICE_CHANNELS[guild.id];
   if (channelIds) {
     for (const channelId of channelIds) {
