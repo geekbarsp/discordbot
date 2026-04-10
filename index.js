@@ -157,6 +157,8 @@ const openai = OPENAI_API_KEY
 const musicStates = new Map();
 const afkStates = new Map();
 const pendingServerLayouts = new Map();
+const serverStatSnapshots = new Map();
+const pendingServerStatUpdates = new Map();
 
 play.setToken({
   useragent: [YOUTUBE_USER_AGENT],
@@ -1263,6 +1265,104 @@ function getServerStatVoiceChannels(guild, categoryId) {
   };
 }
 
+function parseCountFromChannelName(channel, label) {
+  if (!channel) {
+    return null;
+  }
+
+  const prefix = `${label}:`;
+  if (!channel.name.startsWith(prefix)) {
+    return null;
+  }
+
+  const value = Number.parseInt(channel.name.slice(prefix.length).trim(), 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getInitialServerStatSnapshot(guild, channels) {
+  const cachedMembers = guild.members.cache;
+  const cachedUsers = cachedMembers.filter((member) => !member.user.bot).size;
+  const cachedBots = cachedMembers.filter((member) => member.user.bot).size;
+  const cachedKnownMembers = cachedUsers + cachedBots;
+  const totalMembers = guild.memberCount ?? cachedMembers.size ?? 0;
+
+  if (cachedKnownMembers > 0 || totalMembers === 0) {
+    return {
+      totalMembers,
+      userMembers: cachedUsers,
+      botMembers: cachedBots,
+      boosts: guild.premiumSubscriptionCount ?? 0,
+    };
+  }
+
+  const parsedUsers = parseCountFromChannelName(channels.userMembers, SERVER_STAT_CHANNEL_LABELS.userMembers);
+  const parsedBots = parseCountFromChannelName(channels.botMembers, SERVER_STAT_CHANNEL_LABELS.botMembers);
+
+  return {
+    totalMembers,
+    userMembers: parsedUsers ?? Math.max(totalMembers - (parsedBots ?? 0), 0),
+    botMembers: parsedBots ?? 0,
+    boosts: guild.premiumSubscriptionCount ?? 0,
+  };
+}
+
+function getServerStatSnapshot(guild, channels) {
+  const existing = serverStatSnapshots.get(guild.id);
+  if (existing) {
+    return {
+      ...existing,
+      totalMembers: guild.memberCount ?? existing.totalMembers ?? 0,
+      boosts: guild.premiumSubscriptionCount ?? existing.boosts ?? 0,
+    };
+  }
+
+  const initial = getInitialServerStatSnapshot(guild, channels);
+  serverStatSnapshots.set(guild.id, initial);
+  return initial;
+}
+
+function updateServerStatSnapshotForMember(member, direction) {
+  const guild = member.guild;
+  const current = serverStatSnapshots.get(guild.id) ?? {
+    totalMembers: guild.memberCount ?? guild.members.cache.size ?? 0,
+    userMembers: guild.members.cache.filter((cachedMember) => !cachedMember.user.bot).size,
+    botMembers: guild.members.cache.filter((cachedMember) => cachedMember.user.bot).size,
+    boosts: guild.premiumSubscriptionCount ?? 0,
+  };
+
+  const next = {
+    ...current,
+    totalMembers: Math.max((guild.memberCount ?? current.totalMembers ?? 0), 0),
+    boosts: guild.premiumSubscriptionCount ?? current.boosts ?? 0,
+  };
+
+  if (member.user.bot) {
+    next.botMembers = Math.max((next.botMembers ?? 0) + direction, 0);
+  } else {
+    next.userMembers = Math.max((next.userMembers ?? 0) + direction, 0);
+  }
+
+  serverStatSnapshots.set(guild.id, next);
+}
+
+function scheduleServerStatsUpdate(guild, delayMs = 1500) {
+  const existingTimeout = pendingServerStatUpdates.get(guild.id);
+  if (existingTimeout) {
+    clearTimeout(existingTimeout);
+  }
+
+  const timeout = setTimeout(async () => {
+    pendingServerStatUpdates.delete(guild.id);
+    try {
+      await updateServerStatsForGuild(guild);
+    } catch (err) {
+      console.error(`[ServerStats] Failed to update stats for guild ${guild.id}:`, err);
+    }
+  }, delayMs);
+
+  pendingServerStatUpdates.set(guild.id, timeout);
+}
+
 async function updateServerStatsForGuild(guild) {
   const category = getServerStatCategory(guild);
   if (!category) {
@@ -1274,13 +1374,8 @@ async function updateServerStatsForGuild(guild) {
     return;
   }
 
-  const members = await guild.members.fetch();
-  const counts = {
-    totalMembers: guild.memberCount ?? members.size,
-    userMembers: members.filter((member) => !member.user.bot).size,
-    botMembers: members.filter((member) => member.user.bot).size,
-    boosts: guild.premiumSubscriptionCount ?? 0,
-  };
+  const counts = getServerStatSnapshot(guild, channels);
+  serverStatSnapshots.set(guild.id, counts);
 
   await Promise.all(
     Object.entries(channels).map(async ([key, channel]) => {
@@ -1579,7 +1674,7 @@ client.once(Events.ClientReady, async (c) => {
   await joinAllPermanentChannels();
 
   for (const guild of c.guilds.cache.values()) {
-    await updateServerStatsForGuild(guild);
+    scheduleServerStatsUpdate(guild, 0);
   }
 });
 
@@ -1593,23 +1688,37 @@ client.on(Events.GuildCreate, async (guild) => {
     }
   }
 
-  await updateServerStatsForGuild(guild);
+  scheduleServerStatsUpdate(guild, 0);
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
-  await updateServerStatsForGuild(member.guild);
+  updateServerStatSnapshotForMember(member, 1);
+  scheduleServerStatsUpdate(member.guild);
 });
 
 client.on(Events.GuildMemberRemove, async (member) => {
-  await updateServerStatsForGuild(member.guild);
+  updateServerStatSnapshotForMember(member, -1);
+  scheduleServerStatsUpdate(member.guild);
 });
 
 client.on(Events.GuildMemberUpdate, async (_, newMember) => {
-  await updateServerStatsForGuild(newMember.guild);
+  scheduleServerStatsUpdate(newMember.guild);
 });
 
 client.on(Events.GuildUpdate, async (_, newGuild) => {
-  await updateServerStatsForGuild(newGuild);
+  scheduleServerStatsUpdate(newGuild);
+});
+
+client.on('error', (err) => {
+  console.error('[Discord Client Error]', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Unhandled Rejection]', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Uncaught Exception]', err);
 });
 
 // ─── Event: messageCreate ────────────────────────────────────────────────────────
