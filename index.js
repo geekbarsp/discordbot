@@ -1656,22 +1656,32 @@ async function handleDarkItemHelp(message) {
   await message.reply(helpText);
 }
 
+async function handleMusicHelp(message) {
+  const helpText = [
+    '**Music Commands**',
+    '`.p` or `.play` - Music playback is under construction.',
+    '`.s` or `.skip` - Music playback is under construction.',
+    '`.q` or `.queue` - Music playback is under construction.',
+    '`.l`, `.leave`, or `.stop` - Music playback is under construction.',
+    '`.musichelp` - Show this music command list.',
+  ].join('\n');
+
+  await message.reply(helpText);
+}
+
 async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
     '`.help` - Show this command list.',
     '`.afk` - Mark yourself as AFK.',
     '`.darkitemhelp` - Show DarkItem-specific commands.',
+    '`.musichelp` - Show music-specific commands.',
     '`.purge <count>` - Delete a number of recent messages. Manage Messages only.',
     '`.serverstat` - Create or refresh the server statistics voice channels. Admin only.',
     '`.ngaming`, `.nstudy`, `.nfriendlyorg`, `.npersonal`, `.nhackergroup` - Two-step admin-only server layout presets.',
     '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
     '`.spam` - Post one alert message in the current channel.',
     '`.reset <#channel>` - Clone a text channel, delete the old one, and post a reminder in the new channel. Admin only.',
-    '`.p` or `.play` - Music playback is under construction.',
-    '`.s` or `.skip` - Music playback is under construction.',
-    '`.q` or `.queue` - Music playback is under construction.',
-    '`.l`, `.leave`, or `.stop` - Music playback is under construction.',
     '`link <message>` - Chat with the AI assistant.',
     '`.nuke <@user or user_id>` - Kick a user with a dramatic sequence. Admin only.',
     '`.helpsa` - Show superadmin-only commands.',
@@ -2406,6 +2416,9 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'darkitemhelp':
       return handleDarkItemHelp(message);
+
+    case 'musichelp':
+      return handleMusicHelp(message);
 
     case 'darkitem':
       return handleDarkItem(message, args);
