@@ -640,9 +640,6 @@ async function postConfessionSticky(guild) {
     .setColor(0xec4899)
     .setTitle('Anonymous Confessions')
     .setDescription('Use `.confess <message>` to share your feelings, secrets, crushes, or late-night thoughts with the server while staying anonymous.')
-    .addFields({
-      inline: true,
-    })
     .setFooter({ text: 'Be kind. Keep it respectful. Your message will be posted by the bot.' });
 
   const stickyMessage = await channel.send({ embeds: [embed] });
