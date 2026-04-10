@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import { ChannelType, Client, GatewayIntentBits, Events, PermissionFlagsBits } from 'discord.js';
+import { ChannelType, Client, EmbedBuilder, GatewayIntentBits, Events, PermissionFlagsBits } from 'discord.js';
+import { readFile, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import {
   AudioPlayerStatus,
@@ -87,6 +88,9 @@ const SERVER_STAT_CHANNEL_LABELS = {
   botMembers: 'Bots',
   boosts: 'Boosts',
 };
+const DARKITEM_DATA_FILE = new URL('./darkitem-data.json', import.meta.url);
+const DARKITEM_POLL_INTERVAL_MS = 15 * 60 * 1000;
+const DARKITEM_PROMPT_TIMEOUT_MS = 60 * 1000;
 const SERVER_LAYOUT_CONFIRM_MS = 2 * 60 * 1000;
 const SERVER_LAYOUT_PRESETS = {
   ngaming: {
@@ -162,6 +166,11 @@ const pendingServerStatUpdates = new Map();
 const pendingPermanentVoiceJoins = new Map();
 const suspendedPermanentVoiceGuilds = new Set();
 let permanentVoiceAutoJoinDisabled = false;
+let darkItemState = {
+  subscriptions: {},
+  postedDeals: {},
+};
+let darkItemPollPromise = null;
 
 play.setToken({
   useragent: [YOUTUBE_USER_AGENT],
@@ -279,6 +288,384 @@ function renderHtmlPage(title, body) {
     </main>
   </body>
 </html>`;
+}
+
+async function loadDarkItemState() {
+  try {
+    const raw = await readFile(DARKITEM_DATA_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+
+    return {
+      subscriptions: parsed?.subscriptions && typeof parsed.subscriptions === 'object' ? parsed.subscriptions : {},
+      postedDeals: parsed?.postedDeals && typeof parsed.postedDeals === 'object' ? parsed.postedDeals : {},
+    };
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      console.error('[DarkItem] Failed to load saved state:', err);
+    }
+
+    return {
+      subscriptions: {},
+      postedDeals: {},
+    };
+  }
+}
+
+async function saveDarkItemState() {
+  await writeFile(DARKITEM_DATA_FILE, JSON.stringify(darkItemState, null, 2));
+}
+
+function normalizeDarkItemStoreChoice(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+
+  if (normalized === 'epic' || normalized === 'epic games' || normalized === 'epicgames') {
+    return ['epic'];
+  }
+
+  if (normalized === 'steam') {
+    return ['steam'];
+  }
+
+  if (normalized === 'both' || normalized === 'all') {
+    return ['epic', 'steam'];
+  }
+
+  return null;
+}
+
+function formatPriceLabel(value, fallback = 'Unknown') {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) {
+    return fallback;
+  }
+
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+  }).format(amount);
+}
+
+function getDarkItemStoreLabel(store) {
+  return store === 'epic' ? 'Epic Games' : 'Steam';
+}
+
+function getDarkItemStoreLabels(stores) {
+  return stores.map(getDarkItemStoreLabel).join(' + ');
+}
+
+function getPostedDealMap(guildId) {
+  if (!darkItemState.postedDeals[guildId] || typeof darkItemState.postedDeals[guildId] !== 'object') {
+    darkItemState.postedDeals[guildId] = {};
+  }
+
+  return darkItemState.postedDeals[guildId];
+}
+
+function hasPostedDarkItemDeal(guildId, dealId) {
+  return Boolean(getPostedDealMap(guildId)[dealId]);
+}
+
+async function markDarkItemDealPosted(guildId, dealId) {
+  const postedDeals = getPostedDealMap(guildId);
+  postedDeals[dealId] = new Date().toISOString();
+
+  const entries = Object.entries(postedDeals);
+  if (entries.length > 500) {
+    entries
+      .sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))
+      .slice(500)
+      .forEach(([id]) => {
+        delete postedDeals[id];
+      });
+  }
+
+  await saveDarkItemState();
+}
+
+function getDarkItemImage(images) {
+  if (!Array.isArray(images)) {
+    return null;
+  }
+
+  const preferredTypes = [
+    'OfferImageTall',
+    'DieselStoreFrontWide',
+    'Thumbnail',
+    'VaultClosed',
+    'DieselGameBox',
+  ];
+
+  for (const type of preferredTypes) {
+    const image = images.find((item) => item?.type === type && item?.url);
+    if (image?.url) {
+      return image.url;
+    }
+  }
+
+  return images.find((item) => item?.url)?.url ?? null;
+}
+
+function buildEpicOfferUrl(element) {
+  const slug = element?.offerMappings?.[0]?.pageSlug
+    || element?.catalogNs?.mappings?.[0]?.pageSlug
+    || element?.productSlug
+    || element?.urlSlug
+    || null;
+
+  if (!slug) {
+    return 'https://store.epicgames.com/en-US/free-games';
+  }
+
+  const cleanedSlug = slug.replace(/^\/+/, '').replace(/\/home$/, '');
+  return `https://store.epicgames.com/en-US/p/${cleanedSlug}`;
+}
+
+async function fetchEpicFreeDeals() {
+  const response = await fetch('https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=en-US&country=US&allowCountries=US');
+  if (!response.ok) {
+    throw new Error(`Epic request failed with status ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const elements = payload?.data?.Catalog?.searchStore?.elements ?? [];
+  const now = Date.now();
+  const deals = [];
+
+  for (const element of elements) {
+    const offerGroups = element?.promotions?.promotionalOffers ?? [];
+    const activePromotions = offerGroups.flatMap((group) => group?.promotionalOffers ?? []);
+    const discountPrice = Number(element?.price?.totalPrice?.discountPrice ?? NaN);
+
+    if (!Number.isFinite(discountPrice) || discountPrice !== 0) {
+      continue;
+    }
+
+    for (const promotion of activePromotions) {
+      const startDate = promotion?.startDate ?? null;
+      const endDate = promotion?.endDate ?? null;
+
+      if (!startDate || !endDate) {
+        continue;
+      }
+
+      const startsAt = Date.parse(startDate);
+      const endsAt = Date.parse(endDate);
+
+      if (Number.isNaN(startsAt) || Number.isNaN(endsAt) || now < startsAt || now > endsAt) {
+        continue;
+      }
+
+      deals.push({
+        id: `epic:${element.id}:${startDate}`,
+        title: element.title || 'Untitled',
+        store: 'Epic Games',
+        original_price: element?.price?.totalPrice?.fmtPrice?.originalPrice || 'Unknown',
+        sale_price: 'Free',
+        url: buildEpicOfferUrl(element),
+        image: getDarkItemImage(element?.keyImages),
+        start_date: startDate,
+        end_date: endDate,
+        description: element.description || 'Free for a limited time on Epic Games.',
+        platforms: [],
+      });
+    }
+  }
+
+  return deals;
+}
+
+async function fetchSteamAppDetails(appId) {
+  if (!appId) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`https://store.steampowered.com/api/appdetails?appids=${appId}&l=english&cc=us`);
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    return payload?.[appId]?.success ? payload[appId].data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchSteamFreeDeals() {
+  const response = await fetch('https://www.cheapshark.com/api/1.0/deals?storeID=1&upperPrice=0&pageSize=60');
+  if (!response.ok) {
+    throw new Error(`Steam request failed with status ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const rawDeals = Array.isArray(payload) ? payload : [];
+  const filteredDeals = rawDeals.filter((deal) => Number(deal?.salePrice) === 0 && Number(deal?.normalPrice) > 0);
+
+  const detailedDeals = await Promise.all(
+    filteredDeals.map(async (deal) => {
+      const appId = deal?.steamAppID ? String(deal.steamAppID) : null;
+      const appDetails = await fetchSteamAppDetails(appId);
+      const platforms = appDetails?.platforms
+        ? Object.entries(appDetails.platforms)
+            .filter(([, supported]) => supported)
+            .map(([platform]) => platform[0].toUpperCase() + platform.slice(1))
+        : [];
+
+      return {
+        id: `steam:${deal.dealID}`,
+        title: deal.title || appDetails?.name || 'Untitled',
+        store: 'Steam',
+        original_price: formatPriceLabel(Number(deal.normalPrice)),
+        sale_price: 'Free',
+        url: appId ? `https://store.steampowered.com/app/${appId}/` : `https://www.cheapshark.com/redirect?dealID=${deal.dealID}`,
+        image: appDetails?.header_image || deal.thumb || null,
+        start_date: deal.lastChange ? new Date(Number(deal.lastChange) * 1000).toISOString() : null,
+        end_date: null,
+        description: appDetails?.short_description || 'Free for a limited time on Steam.',
+        platforms,
+      };
+    }),
+  );
+
+  return detailedDeals;
+}
+
+function createDarkItemEmbed(deal) {
+  const embed = new EmbedBuilder()
+    .setColor(0x1db954)
+    .setTitle(`${deal.title} is free`)
+    .setURL(deal.url)
+    .setDescription(deal.description || 'Free for a limited time.')
+    .addFields(
+      { name: 'Store', value: deal.store, inline: true },
+      { name: 'Original Price', value: deal.original_price || 'Unknown', inline: true },
+      { name: 'Price Now', value: deal.sale_price || 'Free', inline: true },
+      { name: 'Expires', value: deal.end_date ? `<t:${Math.floor(Date.parse(deal.end_date) / 1000)}:R>` : 'Unknown', inline: true },
+      { name: 'Link', value: `[Get it here](${deal.url})`, inline: true },
+      { name: 'Platforms', value: deal.platforms?.length ? deal.platforms.join(', ') : 'Unknown', inline: true },
+    )
+    .setFooter({ text: `${deal.store} free alert` })
+    .setTimestamp();
+
+  if (deal.image) {
+    embed.setImage(deal.image);
+  }
+
+  return embed;
+}
+
+async function postDarkItemDeal(channel, deal) {
+  await channel.send({
+    embeds: [createDarkItemEmbed(deal)],
+  });
+}
+
+async function pollDarkItemDeals() {
+  if (darkItemPollPromise) {
+    return darkItemPollPromise;
+  }
+
+  darkItemPollPromise = (async () => {
+    const subscriptions = Object.entries(darkItemState.subscriptions ?? {});
+    if (subscriptions.length === 0) {
+      return;
+    }
+
+    const requestedStores = new Set(subscriptions.flatMap(([, subscription]) => subscription?.stores ?? []));
+    const dealsByStore = {
+      epic: [],
+      steam: [],
+    };
+
+    if (requestedStores.has('epic')) {
+      try {
+        dealsByStore.epic = await fetchEpicFreeDeals();
+      } catch (err) {
+        console.error('[DarkItem] Epic polling failed:', err.message);
+      }
+    }
+
+    if (requestedStores.has('steam')) {
+      try {
+        dealsByStore.steam = await fetchSteamFreeDeals();
+      } catch (err) {
+        console.error('[DarkItem] Steam polling failed:', err.message);
+      }
+    }
+
+    for (const [guildId, subscription] of subscriptions) {
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild || !subscription?.channelId || !Array.isArray(subscription?.stores)) {
+        continue;
+      }
+
+      const channel = guild.channels.cache.get(subscription.channelId);
+      if (!channel?.isTextBased()) {
+        continue;
+      }
+
+      const deals = subscription.stores.flatMap((store) => dealsByStore[store] ?? []);
+      for (const deal of deals) {
+        if (hasPostedDarkItemDeal(guildId, deal.id)) {
+          continue;
+        }
+
+        try {
+          await postDarkItemDeal(channel, deal);
+          await markDarkItemDealPosted(guildId, deal.id);
+        } catch (err) {
+          console.error(`[DarkItem] Failed to post ${deal.id} in guild ${guildId}:`, err.message);
+        }
+      }
+    }
+  })();
+
+  try {
+    await darkItemPollPromise;
+  } finally {
+    darkItemPollPromise = null;
+  }
+}
+
+async function promptForDarkItemReply(message, prompt) {
+  await message.reply(prompt);
+
+  try {
+    const collected = await message.channel.awaitMessages({
+      filter: (reply) => reply.author.id === message.author.id,
+      max: 1,
+      time: DARKITEM_PROMPT_TIMEOUT_MS,
+      errors: ['time'],
+    });
+
+    return collected.first();
+  } catch {
+    return null;
+  }
+}
+
+function resolveDarkItemChannel(guild, value, fallbackChannel) {
+  const input = String(value || '').trim().toLowerCase();
+  if (input === 'here') {
+    return fallbackChannel;
+  }
+
+  const channelId = String(value || '').trim().replace(/^<#(\d+)>$/, '$1');
+  if (!/^\d+$/.test(channelId)) {
+    return null;
+  }
+
+  const channel = guild.channels.cache.get(channelId);
+  return channel?.isTextBased() ? channel : null;
 }
 
 function createSpotifyAuthorizeUrl() {
@@ -1173,11 +1560,95 @@ async function handleAfk(message) {
   await message.reply('You are now marked as AFK.');
 }
 
+async function handleDarkItem(message, args) {
+  if (!message.member.permissions.has('Administrator')) {
+    return message.reply('You need Administrator permission to configure `.darkitem`.');
+  }
+
+  if (args[0]?.toLowerCase() === 'off') {
+    delete darkItemState.subscriptions[message.guild.id];
+    delete darkItemState.postedDeals[message.guild.id];
+    await saveDarkItemState();
+    return message.reply('DarkItem alerts are now disabled for this server.');
+  }
+
+  if (args[0]?.toLowerCase() === 'status') {
+    const subscription = darkItemState.subscriptions[message.guild.id];
+    if (!subscription) {
+      return message.reply('DarkItem is not configured for this server yet. Run `.darkitem` to set it up.');
+    }
+
+    const targetChannel = message.guild.channels.cache.get(subscription.channelId);
+    return message.reply(
+      `DarkItem is watching **${getDarkItemStoreLabels(subscription.stores)}** and posting in ${targetChannel ?? `#${subscription.channelId}`}.`,
+    );
+  }
+
+  try {
+    const storeReply = await promptForDarkItemReply(
+      message,
+      'Which store should I watch for free items: `epic`, `steam`, or `both`?',
+    );
+    if (!storeReply) {
+      return message.reply('DarkItem setup timed out. Run `.darkitem` again when you are ready.');
+    }
+
+    const stores = normalizeDarkItemStoreChoice(storeReply?.content);
+
+    if (!stores) {
+      return message.reply('Setup cancelled. Please reply with `epic`, `steam`, or `both`.');
+    }
+
+    const channelReply = await promptForDarkItemReply(
+      message,
+      'Which channel should I post alerts in? Reply with a channel mention like `#deals` or say `here`.',
+    );
+    if (!channelReply) {
+      return message.reply('DarkItem setup timed out. Run `.darkitem` again when you are ready.');
+    }
+
+    const targetChannel = resolveDarkItemChannel(message.guild, channelReply?.content, message.channel);
+
+    if (!targetChannel) {
+      return message.reply('Setup cancelled. I could not resolve that channel.');
+    }
+
+    const botPermissions = message.guild.members.me?.permissionsIn(targetChannel);
+    if (!botPermissions?.has([
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks,
+    ])) {
+      return message.reply(`I need \`View Channel\`, \`Send Messages\`, and \`Embed Links\` in ${targetChannel} first.`);
+    }
+
+    darkItemState.subscriptions[message.guild.id] = {
+      channelId: targetChannel.id,
+      stores,
+      updatedAt: new Date().toISOString(),
+      updatedBy: message.author.id,
+    };
+    await saveDarkItemState();
+
+    await message.reply(
+      `DarkItem is set. I will watch **${getDarkItemStoreLabels(stores)}** and post free-item alerts in ${targetChannel}.`,
+    );
+
+    await pollDarkItemDeals();
+  } catch (err) {
+    console.error('[DarkItem] Setup error:', err);
+    return message.reply(`I could not finish DarkItem setup: ${err.message}`);
+  }
+}
+
 async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
     '`.help` - Show this command list.',
     '`.afk` - Mark yourself as AFK.',
+    '`.darkitem` - Set up free-item alerts for Epic Games, Steam, or both.',
+    '`.darkitem status` - Show the current DarkItem alert settings.',
+    '`.darkitem off` - Disable DarkItem alerts for this server.',
     '`.purge <count>` - Delete a number of recent messages. Manage Messages only.',
     '`.serverstat` - Create or refresh the server statistics voice channels. Admin only.',
     '`.ngaming`, `.nstudy`, `.nfriendlyorg`, `.npersonal`, `.nhackergroup` - Two-step admin-only server layout presets.',
@@ -1757,6 +2228,10 @@ client.once(Events.ClientReady, async (c) => {
   c.user.setActivity('24/7 | .help for commands');
 
   await joinAllPermanentChannels();
+  await pollDarkItemDeals();
+  setInterval(() => {
+    void pollDarkItemDeals();
+  }, DARKITEM_POLL_INTERVAL_MS);
 
   for (const guild of c.guilds.cache.values()) {
     scheduleServerStatsUpdate(guild, 0);
@@ -1863,6 +2338,9 @@ client.on(Events.MessageCreate, async (message) => {
     case 'afk':
       return handleAfk(message);
 
+    case 'darkitem':
+      return handleDarkItem(message, args);
+
     case 'purge':
       return handlePurge(message, args);
 
@@ -1921,6 +2399,8 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 // ─── Login ───────────────────────────────────────────────────────────────────────
+
+darkItemState = await loadDarkItemState();
 
 startCallbackServer();
 
