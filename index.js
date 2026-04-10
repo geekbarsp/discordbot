@@ -1663,7 +1663,6 @@ async function handleMusicHelp(message) {
     '`.s` or `.skip` - Music playback is under construction.',
     '`.q` or `.queue` - Music playback is under construction.',
     '`.l`, `.leave`, or `.stop` - Music playback is under construction.',
-    '`.musichelp` - Show this music command list.',
   ].join('\n');
 
   await message.reply(helpText);
