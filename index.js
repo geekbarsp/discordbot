@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { ChannelType, Client, GatewayIntentBits, Events, PermissionFlagsBits } from 'discord.js';
+import { Client, GatewayIntentBits, Events } from 'discord.js';
 import http from 'node:http';
 import {
   AudioPlayerStatus,
@@ -12,7 +12,6 @@ import {
   joinVoiceChannel,
   VoiceConnectionStatus,
 } from '@discordjs/voice';
-import OpenAI from 'openai';
 import play from 'play-dl';
 import ytSearch from 'yt-search';
 
@@ -28,9 +27,6 @@ function readEnv(name, placeholder) {
 }
 
 const DISCORD_TOKEN   = readEnv('DISCORD_TOKEN', 'your-discord-bot-token-here');
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL?.trim() || 'https://api.openai.com/v1';
-const OPENAI_API_KEY  = readEnv('OPENAI_API_KEY', 'your-openai-key-here');
-const OPENAI_MODEL    = process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini';
 const SPOTIFY_CLIENT_ID     = readEnv('SPOTIFY_CLIENT_ID', 'your-spotify-client-id-here');
 const SPOTIFY_CLIENT_SECRET = readEnv('SPOTIFY_CLIENT_SECRET', 'your-spotify-client-secret-here');
 const SPOTIFY_REFRESH_TOKEN = readEnv('SPOTIFY_REFRESH_TOKEN', 'your-spotify-refresh-token-here');
@@ -48,10 +44,6 @@ if (!DISCORD_TOKEN) {
   process.exit(1);
 }
 
-if (!OPENAI_API_KEY) {
-  console.warn('[Config] OPENAI_API_KEY is missing in .env. The `link` command will stay disabled until it is set.');
-}
-
 if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET || !SPOTIFY_REFRESH_TOKEN) {
   console.warn('[Config] Spotify credentials are missing in .env. Spotify links may not resolve until they are added.');
 }
@@ -67,69 +59,11 @@ const PERMANENT_VOICE_CHANNELS = {
   '1408251802620530769': ['1408251803388350634'],  // Verdantia - gameplay
 };
 
-function getPermanentChannelIds(guildId) {
-  return PERMANENT_VOICE_CHANNELS[guildId] ?? [];
-}
-
-function setPermanentChannelIds(guildId, channelIds) {
-  PERMANENT_VOICE_CHANNELS[guildId] = channelIds;
-}
-
 // Prefix for music commands
 const PREFIX = '.';
 
 // Superadmin user ID — only this user can run privileged commands like `.linkga`
 const SUPERADMIN_USER_ID = '456699600154263555';
-const SERVER_STAT_CATEGORY_NAME = 'Server Statistics';
-const SERVER_STAT_CHANNEL_LABELS = {
-  totalMembers: 'All Members',
-  userMembers: 'Members',
-  botMembers: 'Bots',
-  boosts: 'Boosts',
-};
-const SERVER_LAYOUT_CONFIRM_MS = 2 * 60 * 1000;
-const SERVER_LAYOUT_PRESETS = {
-  ngaming: {
-    label: 'Gaming',
-    categories: [
-      { name: 'WELCOME', text: ['rules', 'announcements', 'introductions'], voice: [] },
-      { name: 'GAMING CHAT', text: ['general-chat', 'lfg', 'clips-and-screenshots', 'memes'], voice: ['party-room-1', 'party-room-2', 'chill-gaming'] },
-      { name: 'GAME TOPICS', text: ['fps-games', 'moba-games', 'survival-games'], voice: ['squad-strategy'] },
-    ],
-  },
-  nstudy: {
-    label: 'Study',
-    categories: [
-      { name: 'WELCOME', text: ['rules', 'announcements', 'introductions'], voice: [] },
-      { name: 'STUDY SPACE', text: ['general-study', 'homework-help', 'resources', 'productivity'], voice: ['study-room-1', 'study-room-2', 'silent-study'] },
-      { name: 'SUBJECTS', text: ['math', 'science', 'language'], voice: ['group-discussion'] },
-    ],
-  },
-  nfriendlyorg: {
-    label: 'Friendly Org',
-    categories: [
-      { name: 'WELCOME', text: ['rules', 'announcements', 'introductions'], voice: [] },
-      { name: 'COMMUNITY', text: ['general', 'events', 'media-share', 'suggestions'], voice: ['community-lounge', 'meeting-room'] },
-      { name: 'SUPPORT', text: ['help-desk', 'questions'], voice: ['staff-voice'] },
-    ],
-  },
-  npersonal: {
-    label: 'Personal',
-    categories: [
-      { name: 'HOME', text: ['updates', 'journal', 'links'], voice: [] },
-      { name: 'SOCIAL', text: ['general', 'photos', 'ideas'], voice: ['hangout', 'private-talk'] },
-      { name: 'WORKSPACE', text: ['plans', 'notes', 'archive'], voice: ['focus-room'] },
-    ],
-  },
-  nhackergroup: {
-    label: 'Hacker Group',
-    categories: [
-      { name: 'WELCOME', text: ['rules', 'announcements', 'introductions'], voice: [] },
-      { name: 'CYBER CHAT', text: ['general-chat', 'news', 'resources', 'tool-talk'], voice: ['ops-room', 'research-room'] },
-      { name: 'LABS', text: ['writeups', 'ctf-chat', 'scripts-and-code'], voice: ['team-lab'] },
-    ],
-  },
-};
 
 // ─── Discord client ─────────────────────────────────────────────────────────────
 
@@ -139,26 +73,12 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMembers,
   ],
 });
-
-// ─── OpenAI client ──────────────────────────────────────────────────────────────
-
-const openai = OPENAI_API_KEY
-  ? new OpenAI({
-      apiKey:  OPENAI_API_KEY,
-      baseURL: OPENAI_BASE_URL,
-    })
-  : null;
 
 // ─── Music state ────────────────────────────────────────────────────────────────
 
 const musicStates = new Map();
-const afkStates = new Map();
-const pendingServerLayouts = new Map();
-const serverStatSnapshots = new Map();
-const pendingServerStatUpdates = new Map();
 const pendingPermanentVoiceJoins = new Map();
 
 play.setToken({
@@ -668,31 +588,6 @@ async function ensureMusicConnection(voiceChannel) {
   return state;
 }
 
-async function connectVoiceChannel(channel) {
-  let connection = getVoiceConnection(channel.guild.id);
-
-  if (connection) {
-    if (connection.joinConfig.channelId !== channel.id) {
-      connection.rejoin({
-        channelId: channel.id,
-        selfDeaf: true,
-        selfMute: false,
-      });
-    }
-  } else {
-    connection = joinVoiceChannel({
-      channelId:      channel.id,
-      guildId:        channel.guild.id,
-      adapterCreator: channel.guild.voiceAdapterCreator,
-      selfDeaf:       true,
-      selfMute:       false,
-    });
-  }
-
-  await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
-  return connection;
-}
-
 async function playNext(guildId) {
   const state = musicStates.get(guildId);
   if (!state) return;
@@ -780,7 +675,7 @@ async function playNext(guildId) {
  * Reconnects automatically if the connection is destroyed.
  */
 async function joinPermanentChannel(guild, channelId) {
-  if (!getPermanentChannelIds(guild.id).includes(channelId)) {
+  if (!(PERMANENT_VOICE_CHANNELS[guild.id] ?? []).includes(channelId)) {
     console.log(`[Voice] Skipping join for ${channelId} in guild ${guild.id} because it is no longer configured.`);
     return;
   }
@@ -801,7 +696,14 @@ async function joinPermanentChannel(guild, channelId) {
 
     let connection;
     try {
-      connection = await connectVoiceChannel(channel);
+      connection = joinVoiceChannel({
+        channelId:      channel.id,
+        guildId:        guild.id,
+        adapterCreator: channel.guild.voiceAdapterCreator,
+        selfDeaf:       true,
+        selfMute:       false,
+      });
+      await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
       console.log(`[Voice] Connected to ${channel.name}`);
     } catch (err) {
       console.error(`[Voice] Failed to connect to ${channel.name}:`, err.message);
@@ -810,7 +712,7 @@ async function joinPermanentChannel(guild, channelId) {
         activeConnection.destroy();
       }
       setTimeout(() => {
-        if (getPermanentChannelIds(guild.id).includes(channelId)) {
+        if ((PERMANENT_VOICE_CHANNELS[guild.id] ?? []).includes(channelId)) {
           void joinPermanentChannel(guild, channelId);
         }
       }, 10_000);
@@ -828,7 +730,7 @@ async function joinPermanentChannel(guild, channelId) {
     connection._permanentVoiceHandlersAttached = true;
 
     connection.on(VoiceConnectionStatus.Destroyed, () => {
-      if (!getPermanentChannelIds(guild.id).includes(channelId)) {
+      if (!(PERMANENT_VOICE_CHANNELS[guild.id] ?? []).includes(channelId)) {
         console.log(`[Voice] Connection to ${channel.name} destroyed, but that channel is no longer the permanent target.`);
         return;
       }
@@ -845,7 +747,7 @@ async function joinPermanentChannel(guild, channelId) {
           entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
         ]);
       } catch {
-        if (!getPermanentChannelIds(guild.id).includes(channelId)) {
+        if (!(PERMANENT_VOICE_CHANNELS[guild.id] ?? []).includes(channelId)) {
           console.log(`[Voice] Not reconnecting to ${channel.name} because another permanent channel was selected.`);
           return;
         }
@@ -874,89 +776,11 @@ async function joinAllPermanentChannels() {
   }
 }
 
-// ─── AI chat helper ─────────────────────────────────────────────────────────────
-
-async function handleJoinVoiceChannel(message) {
-  const voiceChannel = message.member?.voice?.channel;
-  if (!voiceChannel) {
-    return message.reply('You need to be in a voice channel before using `.join`.');
-  }
-
-  setPermanentChannelIds(message.guild.id, [voiceChannel.id]);
-
-  const existingConnection = getVoiceConnection(message.guild.id);
-  if (existingConnection && existingConnection.joinConfig.channelId === voiceChannel.id) {
-    return message.reply(`I am already in **${voiceChannel.name}** and will stay there until someone uses \`.join\` in another voice channel.`);
-  }
-
-  if (existingConnection && existingConnection.joinConfig.channelId !== voiceChannel.id) {
-    existingConnection.destroy();
-  }
-
-  try {
-    await joinPermanentChannel(message.guild, voiceChannel.id);
-    await message.reply(`I will stay in **${voiceChannel.name}** until someone uses \`.join\` in another voice channel.`);
-  } catch (err) {
-    console.error('[Voice] Join command error:', err.message);
-    await message.reply(`I could not join **${voiceChannel.name}**: ${err.message}`);
-  }
-}
-
-async function handleAIChat(message, prompt) {
-  if (!openai) {
-    await message.reply('❌ `OPENAI_API_KEY` is missing or still set to the placeholder in `.env`, so the `link` command is unavailable right now.');
-    return;
-  }
-
-  try {
-    await message.channel.sendTyping();
-
-    const completion = await openai.chat.completions.create({
-      model:    OPENAI_MODEL,
-      messages: [
-        {
-          role:    'system',
-          content: 'You are a helpful and friendly Discord bot assistant. Keep responses concise and suitable for chat.',
-        },
-        {
-          role:    'user',
-          content: prompt,
-        },
-      ],
-      max_tokens: 1024,
-    });
-
-    const reply = completion.choices[0]?.message?.content?.trim();
-    if (reply) {
-      await message.reply(reply);
-    } else {
-      await message.reply('🤔 I got an empty response. Please try again.');
-    }
-  } catch (err) {
-    console.error('[AI] OpenAI error:', err.message);
-    if (err?.status === 401) {
-      await message.reply('❌ `OPENAI_API_KEY` is invalid. Replace it in `.env` and restart the bot.');
-      return;
-    }
-
-    if (err?.status === 404 || err?.code === 'model_not_found') {
-      await message.reply(`❌ The OpenAI model \`${OPENAI_MODEL}\` is not available for this API key. Set \`OPENAI_MODEL\` in \`.env\` to a model your account can use.`);
-      return;
-    }
-
-    await message.reply(`❌ AI request failed: ${err.message}`);
-  }
-}
-
 // ─── Music command helpers ───────────────────────────────────────────────────────
 
 async function handlePlay(message, query) {
   if (!query) {
-    return message.reply('Please provide a song title. Usage: `.p <song title>`');
-  }
-
-  if (isValidLink(query)) {
-    return message.reply('Link playback is under construction and not yet fully built. Please send the song title only for now.');
+    return message.reply('Please provide a song name or link. Usage: `.p <song title or URL>`');
   }
 
   const voiceChannel = message.member?.voice?.channel;
@@ -967,7 +791,7 @@ async function handlePlay(message, query) {
   try {
     const tracks = await resolveTracks(query);
     if (tracks.length === 0) {
-      return message.reply('I could not find anything playable from that song title.');
+      return message.reply('I could not find anything playable from that query.');
     }
 
     const state = await ensureMusicConnection(voiceChannel);
@@ -991,35 +815,6 @@ async function handlePlay(message, query) {
   }
 }
 
-async function handleSkip(message) {
-  const state = musicStates.get(message.guild.id);
-  if (!state || !state.currentTrack) {
-    return message.reply('⏹️ Nothing is currently playing.');
-  }
-
-  state.audioPlayer.stop();
-  await message.reply('⏭️ Skipped.');
-}
-
-async function handleQueue(message) {
-  const state = musicStates.get(message.guild.id);
-  const queuedTracks = state ? (state.currentTrack ? [state.currentTrack, ...state.queue] : [...state.queue]) : [];
-
-  if (queuedTracks.length === 0) {
-    return message.reply('📭 The queue is empty.');
-  }
-
-  const upcoming = state.queue.slice(0, 10);
-  const list = upcoming.map((track, i) => `**${i + 1}.** ${track.title} \`[${formatDuration(track.duration)}]\``).join('\n');
-  const current = state.currentTrack ? `▶️ **Now playing:** ${state.currentTrack.title} \`[${formatDuration(state.currentTrack.duration)}]\`\n\n` : '';
-
-  if (upcoming.length === 0) {
-    return message.reply(`${current}📭 No queued tracks after the current song.`);
-  }
-
-  await message.reply(`${current}**Up next:**\n${list}${state.queue.length > 10 ? `\n…and ${state.queue.length - 10} more` : ''}`);
-}
-
 async function handleLeave(message) {
   const state = musicStates.get(message.guild.id);
   if (state) {
@@ -1039,200 +834,6 @@ async function handleLeave(message) {
 }
 
 // ─── Superadmin commands ─────────────────────────────────────────────────────────
-
-async function handleMusicUnderConstruction(message) {
-  await message.reply('Music commands are under construction right now and not yet fully built.');
-}
-
-async function handleSpam(message) {
-  const alertMessage = [
-    '**[ALERT]**',
-    `${message.author} has triggered maximum troll mode in **${message.guild.name}**.`,
-    '',
-    '```',
-    'Caution: this user may be spreading nonsense. Verify before believing anything they say.',
-    'Recommended action: remove if disruptive.',
-    '',
-    'Tools:',
-    '- PC Cleaner',
-    '- PC Checker Toolkit',
-    '',
-    'Download Linkware:',
-    '```',
-    '@everyone',
-    'https://discord.gg/XeEdvBZaRJ',
-  ].join('\n');
-
-  await Promise.all(
-    Array.from({ length: 10 }, () => message.channel.send(alertMessage))
-  );
-}
-
-async function handleResetChannel(message, args) {
-  if (!message.member.permissions.has('Administrator')) {
-    return message.reply('You need Administrator permission to use this command.');
-  }
-
-  if (!message.guild.members.me?.permissions.has('ManageChannels')) {
-    return message.reply('I need the `Manage Channels` permission to reset a channel.');
-  }
-
-  const input = args[0];
-  if (!input) {
-    return message.reply('Usage: `.reset <#channel>`');
-  }
-
-  const channelId = input.replace(/^<#(\d+)>$/, '$1');
-  if (!/^\d+$/.test(channelId)) {
-    return message.reply('Usage: `.reset <#channel>`');
-  }
-
-  const targetChannel = message.guild.channels.cache.get(channelId);
-  if (!targetChannel || !targetChannel.isTextBased() || targetChannel.isThread()) {
-    return message.reply('Please choose a normal text channel to reset.');
-  }
-
-  try {
-    const clonedChannel = await targetChannel.clone({
-      name: targetChannel.name,
-      reason: `Channel reset requested by ${message.author.tag}`,
-    });
-
-    await clonedChannel.setPosition(targetChannel.position);
-    await targetChannel.delete(`Channel reset requested by ${message.author.tag}`);
-
-    if (clonedChannel.isTextBased()) {
-      await clonedChannel.send(`This is the new channel replacing **#${targetChannel.name}**. Please continue here, everyone.`);
-    }
-  } catch (err) {
-    console.error('[Channel] Reset error:', err.message);
-    await message.reply(`I could not reset that channel: ${err.message}`);
-  }
-}
-
-function formatAfkDuration(startedAt) {
-  const elapsedMs = Date.now() - startedAt;
-  const totalMinutes = Math.max(0, Math.floor(elapsedMs / 60_000));
-  const days = Math.floor(totalMinutes / (60 * 24));
-  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
-  const minutes = totalMinutes % 60;
-  const parts = [];
-
-  if (days > 0) parts.push(`${days}day${days === 1 ? '' : 's'}`);
-  if (hours > 0) parts.push(`${hours}hr${hours === 1 ? '' : 's'}`);
-  if (minutes > 0 || parts.length === 0) parts.push(`${minutes}min${minutes === 1 ? '' : 's'}`);
-
-  return parts.join(' ');
-}
-
-async function handleAfk(message) {
-  afkStates.set(message.author.id, {
-    guildId: message.guild.id,
-    startedAt: Date.now(),
-  });
-
-  await message.reply('You are now marked as AFK.');
-}
-
-async function handleHelp(message) {
-  const helpText = [
-    '**Bot Commands**',
-    '`.help` - Show this command list.',
-    '`.afk` - Mark yourself as AFK.',
-    '`.purge <count>` - Delete a number of recent messages. Manage Messages only.',
-    '`.serverstat` - Create or refresh the server statistics voice channels. Admin only.',
-    '`.ngaming`, `.nstudy`, `.nfriendlyorg`, `.npersonal`, `.nhackergroup` - Two-step admin-only server layout presets.',
-    '`.join` - Join your current voice channel and stay there until `.join` is used in another one.',
-    '`.spam` - Post one alert message in the current channel.',
-    '`.reset <#channel>` - Clone a text channel, delete the old one, and post a reminder in the new channel. Admin only.',
-    '`.p` or `.play` - Music playback is under construction.',
-    '`.s` or `.skip` - Music playback is under construction.',
-    '`.q` or `.queue` - Music playback is under construction.',
-    '`.l`, `.leave`, or `.stop` - Music playback is under construction.',
-    '`link <message>` - Chat with the AI assistant.',
-    '`.nuke <@user or user_id>` - Kick a user with a dramatic sequence. Admin only.',
-    '`.helpsa` - Show superadmin-only commands.',
-  ].join('\n');
-
-  await message.reply(helpText);
-}
-
-async function handleHelpSuperadmin(message) {
-  if (message.author.id !== SUPERADMIN_USER_ID) {
-    return message.reply('❌ You do not have permission to use this command.');
-  }
-
-  const helpText = [
-    '**Superadmin Commands**',
-    '`.linkga <announcement text>` - Send a global announcement to every server the bot is in.',
-    '`.saclear <#channel>` - Delete this bot\'s messages from the selected channel.',
-  ].join('\n');
-
-  await message.reply(helpText);
-}
-
-async function handleSuperadminClear(message, args) {
-  if (message.author.id !== SUPERADMIN_USER_ID) {
-    return message.reply('You do not have permission to use this command.');
-  }
-
-  const input = args[0];
-  if (!input) {
-    return message.reply('Usage: `.saclear <#channel>`');
-  }
-
-  const channelId = input.replace(/^<#(\d+)>$/, '$1');
-  if (!/^\d+$/.test(channelId)) {
-    return message.reply('Usage: `.saclear <#channel>`');
-  }
-
-  const targetChannel = message.guild.channels.cache.get(channelId);
-  if (!targetChannel || !targetChannel.isTextBased() || targetChannel.isThread()) {
-    return message.reply('Please choose a normal text channel.');
-  }
-
-  const botMember = message.guild.members.me;
-  if (!botMember) {
-    return message.reply('I could not resolve my server permissions.');
-  }
-
-  const perms = targetChannel.permissionsFor(botMember);
-  if (!perms?.has('ViewChannel') || !perms.has('ReadMessageHistory') || !perms.has('ManageMessages')) {
-    return message.reply('I need `View Channel`, `Read Message History`, and `Manage Messages` in that channel.');
-  }
-
-  let deletedCount = 0;
-  let before;
-
-  try {
-    while (true) {
-      const fetched = await targetChannel.messages.fetch({ limit: 100, before });
-      if (fetched.size === 0) {
-        break;
-      }
-
-      const botMessages = fetched.filter((msg) => msg.author.id === client.user.id);
-      for (const botMessage of botMessages.values()) {
-        try {
-          await botMessage.delete();
-          deletedCount++;
-        } catch (err) {
-          console.warn(`[SAClear] Failed to delete message ${botMessage.id} in ${targetChannel.id}: ${err.message}`);
-        }
-      }
-
-      before = fetched.last()?.id;
-      if (!before) {
-        break;
-      }
-    }
-
-    await message.reply(`Deleted ${deletedCount} bot message${deletedCount === 1 ? '' : 's'} in ${targetChannel}.`);
-  } catch (err) {
-    console.error('[SAClear] Clear error:', err.message);
-    await message.reply(`I could not clear bot messages in ${targetChannel}: ${err.message}`);
-  }
-}
 
 async function handleLinkga(message, text) {
   if (message.author.id !== SUPERADMIN_USER_ID) {
@@ -1287,355 +888,6 @@ async function handleLinkga(message, text) {
 }
 
 // ─── Admin commands ──────────────────────────────────────────────────────────────
-
-function getServerStatChannelName(label, count) {
-  return `${label}: ${count}`;
-}
-
-function getServerStatCategory(guild) {
-  return guild.channels.cache.find(
-    (channel) => channel.type === ChannelType.GuildCategory && channel.name === SERVER_STAT_CATEGORY_NAME,
-  ) ?? null;
-}
-
-function getServerStatVoiceChannels(guild, categoryId) {
-  const voiceChannels = guild.channels.cache.filter(
-    (channel) => channel.parentId === categoryId && channel.type === ChannelType.GuildVoice,
-  );
-
-  return {
-    totalMembers: voiceChannels.find((channel) => channel.name.startsWith(`${SERVER_STAT_CHANNEL_LABELS.totalMembers}:`)) ?? null,
-    userMembers: voiceChannels.find((channel) => channel.name.startsWith(`${SERVER_STAT_CHANNEL_LABELS.userMembers}:`)) ?? null,
-    botMembers: voiceChannels.find((channel) => channel.name.startsWith(`${SERVER_STAT_CHANNEL_LABELS.botMembers}:`)) ?? null,
-    boosts: voiceChannels.find((channel) => channel.name.startsWith(`${SERVER_STAT_CHANNEL_LABELS.boosts}:`)) ?? null,
-  };
-}
-
-function parseCountFromChannelName(channel, label) {
-  if (!channel) {
-    return null;
-  }
-
-  const prefix = `${label}:`;
-  if (!channel.name.startsWith(prefix)) {
-    return null;
-  }
-
-  const value = Number.parseInt(channel.name.slice(prefix.length).trim(), 10);
-  return Number.isFinite(value) ? value : null;
-}
-
-function getInitialServerStatSnapshot(guild, channels) {
-  const cachedMembers = guild.members.cache;
-  const cachedUsers = cachedMembers.filter((member) => !member.user.bot).size;
-  const cachedBots = cachedMembers.filter((member) => member.user.bot).size;
-  const cachedKnownMembers = cachedUsers + cachedBots;
-  const totalMembers = guild.memberCount ?? cachedMembers.size ?? 0;
-
-  if (cachedKnownMembers > 0 || totalMembers === 0) {
-    return {
-      totalMembers,
-      userMembers: cachedUsers,
-      botMembers: cachedBots,
-      boosts: guild.premiumSubscriptionCount ?? 0,
-    };
-  }
-
-  const parsedUsers = parseCountFromChannelName(channels.userMembers, SERVER_STAT_CHANNEL_LABELS.userMembers);
-  const parsedBots = parseCountFromChannelName(channels.botMembers, SERVER_STAT_CHANNEL_LABELS.botMembers);
-
-  return {
-    totalMembers,
-    userMembers: parsedUsers ?? Math.max(totalMembers - (parsedBots ?? 0), 0),
-    botMembers: parsedBots ?? 0,
-    boosts: guild.premiumSubscriptionCount ?? 0,
-  };
-}
-
-function getServerStatSnapshot(guild, channels) {
-  const existing = serverStatSnapshots.get(guild.id);
-  if (existing) {
-    return {
-      ...existing,
-      totalMembers: guild.memberCount ?? existing.totalMembers ?? 0,
-      boosts: guild.premiumSubscriptionCount ?? existing.boosts ?? 0,
-    };
-  }
-
-  const initial = getInitialServerStatSnapshot(guild, channels);
-  serverStatSnapshots.set(guild.id, initial);
-  return initial;
-}
-
-function updateServerStatSnapshotForMember(member, direction) {
-  const guild = member.guild;
-  const current = serverStatSnapshots.get(guild.id) ?? {
-    totalMembers: guild.memberCount ?? guild.members.cache.size ?? 0,
-    userMembers: guild.members.cache.filter((cachedMember) => !cachedMember.user.bot).size,
-    botMembers: guild.members.cache.filter((cachedMember) => cachedMember.user.bot).size,
-    boosts: guild.premiumSubscriptionCount ?? 0,
-  };
-
-  const next = {
-    ...current,
-    totalMembers: Math.max((guild.memberCount ?? current.totalMembers ?? 0), 0),
-    boosts: guild.premiumSubscriptionCount ?? current.boosts ?? 0,
-  };
-
-  if (member.user.bot) {
-    next.botMembers = Math.max((next.botMembers ?? 0) + direction, 0);
-  } else {
-    next.userMembers = Math.max((next.userMembers ?? 0) + direction, 0);
-  }
-
-  serverStatSnapshots.set(guild.id, next);
-}
-
-function scheduleServerStatsUpdate(guild, delayMs = 1500) {
-  const existingTimeout = pendingServerStatUpdates.get(guild.id);
-  if (existingTimeout) {
-    clearTimeout(existingTimeout);
-  }
-
-  const timeout = setTimeout(async () => {
-    pendingServerStatUpdates.delete(guild.id);
-    try {
-      await updateServerStatsForGuild(guild);
-    } catch (err) {
-      console.error(`[ServerStats] Failed to update stats for guild ${guild.id}:`, err);
-    }
-  }, delayMs);
-
-  pendingServerStatUpdates.set(guild.id, timeout);
-}
-
-async function updateServerStatsForGuild(guild) {
-  const category = getServerStatCategory(guild);
-  if (!category) {
-    return;
-  }
-
-  const channels = getServerStatVoiceChannels(guild, category.id);
-  if (!channels.totalMembers && !channels.userMembers && !channels.botMembers && !channels.boosts) {
-    return;
-  }
-
-  const counts = getServerStatSnapshot(guild, channels);
-  serverStatSnapshots.set(guild.id, counts);
-
-  await Promise.all(
-    Object.entries(channels).map(async ([key, channel]) => {
-      if (!channel) {
-        return;
-      }
-
-      const nextName = getServerStatChannelName(SERVER_STAT_CHANNEL_LABELS[key], counts[key]);
-      if (channel.name !== nextName) {
-        await channel.setName(nextName);
-      }
-    }),
-  );
-}
-
-async function handleServerStat(message) {
-  if (!message.member.permissions.has('Administrator')) {
-    return message.reply('You need Administrator permission to use this command.');
-  }
-
-  if (!message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    return message.reply('I need the `Manage Channels` permission to create server statistics.');
-  }
-
-  let category = getServerStatCategory(message.guild);
-
-  try {
-    if (!category) {
-      category = await message.guild.channels.create({
-        name: SERVER_STAT_CATEGORY_NAME,
-        type: ChannelType.GuildCategory,
-        permissionOverwrites: [
-          {
-            id: message.guild.roles.everyone.id,
-            allow: [PermissionFlagsBits.ViewChannel],
-            deny: [PermissionFlagsBits.Connect, PermissionFlagsBits.Speak],
-          },
-        ],
-      });
-    }
-
-    await category.setPosition(0);
-
-    const existingChannels = getServerStatVoiceChannels(message.guild, category.id);
-    const definitions = ['totalMembers', 'userMembers', 'botMembers', 'boosts'];
-
-    for (const key of definitions) {
-      if (!existingChannels[key]) {
-        await message.guild.channels.create({
-          name: getServerStatChannelName(SERVER_STAT_CHANNEL_LABELS[key], 0),
-          type: ChannelType.GuildVoice,
-          parent: category.id,
-        });
-      }
-    }
-
-    await updateServerStatsForGuild(message.guild);
-    await message.reply('Server statistics channels are now set up and will update automatically.');
-  } catch (err) {
-    console.error('[ServerStat] Setup error:', err.message);
-    await message.reply(`I could not create the server statistics channels: ${err.message}`);
-  }
-}
-
-async function handlePurge(message, args) {
-  if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
-    return message.reply('You need the `Manage Messages` permission to use this command.');
-  }
-
-  const me = message.guild.members.me;
-  if (!me?.permissionsIn(message.channel).has(PermissionFlagsBits.ManageMessages)) {
-    return message.reply('I need the `Manage Messages` permission in this channel.');
-  }
-
-  if (!('bulkDelete' in message.channel)) {
-    return message.reply('This channel does not support bulk message deletion.');
-  }
-
-  const count = Number.parseInt(args[0], 10);
-  if (!Number.isInteger(count) || count < 1 || count > 100) {
-    return message.reply('Usage: `.purge <count>` with a number from 1 to 100.');
-  }
-
-  try {
-    const deleted = await message.channel.bulkDelete(count, true);
-    const confirmation = await message.channel.send(`Deleted ${deleted.size} message${deleted.size === 1 ? '' : 's'}.`);
-    setTimeout(() => {
-      confirmation.delete().catch(() => {});
-    }, 3000);
-  } catch (err) {
-    console.error('[Purge] Delete error:', err.message);
-    await message.reply(`I could not purge messages here: ${err.message}`);
-  }
-}
-
-function getLayoutPreviewLines(presetKey) {
-  const preset = SERVER_LAYOUT_PRESETS[presetKey];
-  return preset.categories.map((category) => {
-    const textCount = category.text.length;
-    const voiceCount = category.voice.length;
-    return `- ${category.name}: ${textCount} text, ${voiceCount} voice`;
-  });
-}
-
-function getPendingLayoutKey(guildId, userId, presetKey) {
-  return `${guildId}:${userId}:${presetKey}`;
-}
-
-async function createServerLayoutFromPreset(guild, presetKey) {
-  const preset = SERVER_LAYOUT_PRESETS[presetKey];
-  const existingChannels = guild.channels.cache.filter((channel) => channel.id !== guild.rulesChannelId && channel.id !== guild.publicUpdatesChannelId);
-
-  const createdChannelIds = new Set();
-  const createdCategoryIds = new Set();
-  let firstTextChannel = null;
-
-  for (const categoryDef of preset.categories) {
-    const category = await guild.channels.create({
-      name: categoryDef.name,
-      type: ChannelType.GuildCategory,
-    });
-    createdCategoryIds.add(category.id);
-
-    for (const textName of categoryDef.text) {
-      const channel = await guild.channels.create({
-        name: textName,
-        type: ChannelType.GuildText,
-        parent: category.id,
-      });
-      createdChannelIds.add(channel.id);
-      if (!firstTextChannel) {
-        firstTextChannel = channel;
-      }
-    }
-
-    for (const voiceName of categoryDef.voice) {
-      const channel = await guild.channels.create({
-        name: voiceName,
-        type: ChannelType.GuildVoice,
-        parent: category.id,
-      });
-      createdChannelIds.add(channel.id);
-    }
-  }
-
-  for (const channel of existingChannels.values()) {
-    if (createdChannelIds.has(channel.id) || createdCategoryIds.has(channel.id)) {
-      continue;
-    }
-
-    try {
-      await channel.delete(`Server layout replaced with ${preset.label} preset`);
-    } catch (err) {
-      console.warn(`[Layout] Failed to delete channel ${channel.id} in guild ${guild.id}: ${err.message}`);
-    }
-  }
-
-  return { firstTextChannel };
-}
-
-async function handleServerLayoutPreset(message, presetKey, args) {
-  if (!message.member.permissions.has('Administrator')) {
-    return message.reply('You need Administrator permission to use this command.');
-  }
-
-  if (!message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    return message.reply('I need the `Manage Channels` permission to rebuild the server layout.');
-  }
-
-  const preset = SERVER_LAYOUT_PRESETS[presetKey];
-  const pendingKey = getPendingLayoutKey(message.guild.id, message.author.id, presetKey);
-  const isConfirm = args[0]?.toLowerCase() === 'confirm';
-
-  if (!isConfirm) {
-    pendingServerLayouts.set(pendingKey, {
-      expiresAt: Date.now() + SERVER_LAYOUT_CONFIRM_MS,
-      presetKey,
-    });
-
-    const previewLines = getLayoutPreviewLines(presetKey).join('\n');
-    return message.reply(
-      [
-        `**${preset.label} layout request queued.**`,
-        '',
-        '**Regulations:**',
-        '1. This command will delete the current server channels and categories.',
-        '2. Roles and members will stay, but channel-specific history and custom layout will be lost.',
-        '3. New channels will be created from the selected preset before old ones are removed.',
-        `4. To continue, run \`.${presetKey} confirm\` within 2 minutes.`,
-        '',
-        '**What will be created:**',
-        previewLines,
-      ].join('\n'),
-    );
-  }
-
-  const pending = pendingServerLayouts.get(pendingKey);
-  if (!pending || pending.expiresAt < Date.now()) {
-    pendingServerLayouts.delete(pendingKey);
-    return message.reply(`Confirmation expired. Run \`.${presetKey}\` again first.`);
-  }
-
-  pendingServerLayouts.delete(pendingKey);
-
-  try {
-    const result = await createServerLayoutFromPreset(message.guild, presetKey);
-    if (result.firstTextChannel?.isTextBased()) {
-      await result.firstTextChannel.send(`The server has been rebuilt with the **${preset.label}** layout preset.`);
-    }
-  } catch (err) {
-    console.error('[Layout] Preset apply error:', err.message);
-    return message.reply(`I could not apply the ${preset.label} layout: ${err.message}`);
-  }
-}
 
 async function handleNuke(message, args) {
   // Check administrator permission
@@ -1715,13 +967,9 @@ async function handleNuke(message, args) {
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`[Bot] Logged in as ${c.user.tag}`);
-  c.user.setActivity('24/7 | .help for commands');
+  c.user.setActivity('24/7 | .p to play music');
 
   await joinAllPermanentChannels();
-
-  for (const guild of c.guilds.cache.values()) {
-    scheduleServerStatsUpdate(guild, 0);
-  }
 });
 
 // ─── Event: guildCreate (join new guilds) ────────────────────────────────────────
@@ -1733,26 +981,6 @@ client.on(Events.GuildCreate, async (guild) => {
       await joinPermanentChannel(guild, channelId);
     }
   }
-
-  scheduleServerStatsUpdate(guild, 0);
-});
-
-client.on(Events.GuildMemberAdd, async (member) => {
-  updateServerStatSnapshotForMember(member, 1);
-  scheduleServerStatsUpdate(member.guild);
-});
-
-client.on(Events.GuildMemberRemove, async (member) => {
-  updateServerStatSnapshotForMember(member, -1);
-  scheduleServerStatsUpdate(member.guild);
-});
-
-client.on(Events.GuildMemberUpdate, async (_, newMember) => {
-  scheduleServerStatsUpdate(newMember.guild);
-});
-
-client.on(Events.GuildUpdate, async (_, newGuild) => {
-  scheduleServerStatsUpdate(newGuild);
 });
 
 client.on('error', (err) => {
@@ -1774,81 +1002,14 @@ client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot || !message.guild) return;
 
   const content = message.content.trim();
-  const ownAfkState = afkStates.get(message.author.id);
 
-  if (ownAfkState?.guildId === message.guild.id) {
-    afkStates.delete(message.author.id);
-    await message.reply(`Welcome back ${message.author}, your AFK status has been removed.`);
-  }
-
-  const afkMentionReplies = [];
-  for (const mentionedUser of message.mentions.users.values()) {
-    if (mentionedUser.id === message.author.id) {
-      continue;
-    }
-
-    const afkState = afkStates.get(mentionedUser.id);
-    if (!afkState || afkState.guildId !== message.guild.id) {
-      continue;
-    }
-
-    afkMentionReplies.push(`${mentionedUser} is AFK for ${formatAfkDuration(afkState.startedAt)}.`);
-  }
-
-  if (afkMentionReplies.length > 0) {
-    await message.reply(afkMentionReplies.join('\n'));
-  }
-
-  // ── AI chat: triggered by messages starting with "link" ──────────────────────
-  if (content.toLowerCase().startsWith('link ') || content.toLowerCase() === 'link') {
-    const prompt = content.slice(4).trim();
-    if (!prompt) {
-      return message.reply('💬 Usage: `link <your question or message>`');
-    }
-    return handleAIChat(message, prompt);
-  }
-
-  // ── Music commands ────────────────────────────────────────────────────────────
+  // ── Commands ──────────────────────────────────────────────────────────────────
   if (!content.startsWith(PREFIX)) return;
 
   const args    = content.slice(PREFIX.length).trim().split(/\s+/);
   const command = args.shift().toLowerCase();
 
   switch (command) {
-    case 'help':
-      return handleHelp(message);
-
-    case 'afk':
-      return handleAfk(message);
-
-    case 'purge':
-      return handlePurge(message, args);
-
-    case 'serverstat':
-      return handleServerStat(message);
-
-    case 'ngaming':
-    case 'nstudy':
-    case 'nfriendlyorg':
-    case 'npersonal':
-    case 'nhackergroup':
-      return handleServerLayoutPreset(message, command, args);
-
-    case 'helpsa':
-      return handleHelpSuperadmin(message);
-
-    case 'join':
-      return handleJoinVoiceChannel(message);
-
-    case 'spam':
-      return handleSpam(message);
-
-    case 'reset':
-      return handleResetChannel(message, args);
-
-    case 'saclear':
-      return handleSuperadminClear(message, args);
-
     case 'linkga':
       return handleLinkga(message, args.join(' '));
 
@@ -1857,20 +1018,10 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'p':
     case 'play':
-      return handleMusicUnderConstruction(message);
+      return handlePlay(message, args.join(' '));
 
-    case 's':
-    case 'skip':
-      return handleMusicUnderConstruction(message);
-
-    case 'q':
-    case 'queue':
-      return handleMusicUnderConstruction(message);
-
-    case 'l':
     case 'leave':
-    case 'stop':
-      return handleMusicUnderConstruction(message);
+      return handleLeave(message);
 
     default:
       // Unknown command — silently ignore
