@@ -169,6 +169,7 @@ let permanentVoiceAutoJoinDisabled = false;
 let darkItemState = {
   subscriptions: {},
   postedDeals: {},
+  syncChannels: {},
 };
 let darkItemPollPromise = null;
 
@@ -298,6 +299,7 @@ async function loadDarkItemState() {
     return {
       subscriptions: parsed?.subscriptions && typeof parsed.subscriptions === 'object' ? parsed.subscriptions : {},
       postedDeals: parsed?.postedDeals && typeof parsed.postedDeals === 'object' ? parsed.postedDeals : {},
+      syncChannels: parsed?.syncChannels && typeof parsed.syncChannels === 'object' ? parsed.syncChannels : {},
     };
   } catch (err) {
     if (err?.code !== 'ENOENT') {
@@ -307,6 +309,7 @@ async function loadDarkItemState() {
     return {
       subscriptions: {},
       postedDeals: {},
+      syncChannels: {},
     };
   }
 }
@@ -1641,12 +1644,25 @@ async function handleDarkItem(message, args) {
   }
 }
 
+async function handleDarkItemHelp(message) {
+  const helpText = [
+    '**DarkItem Commands**',
+    '`.darkitem` - Start setup for free-item alerts.',
+    '`.darkitem status` - Show the current DarkItem alert settings.',
+    '`.darkitem off` - Disable DarkItem alerts for this server.',
+    '`.darkitemhelp` - Show this DarkItem command list.',
+  ].join('\n');
+
+  await message.reply(helpText);
+}
+
 async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
     '`.help` - Show this command list.',
     '`.afk` - Mark yourself as AFK.',
     '`.darkitem` - Set up free-item alerts for Epic Games, Steam, or both.',
+    '`.darkitemhelp` - Show DarkItem-specific commands.',
     '`.darkitem status` - Show the current DarkItem alert settings.',
     '`.darkitem off` - Disable DarkItem alerts for this server.',
     '`.purge <count>` - Delete a number of recent messages. Manage Messages only.',
@@ -1675,6 +1691,7 @@ async function handleHelpSuperadmin(message) {
   const helpText = [
     '**Superadmin Commands**',
     '`.linkga <announcement text>` - Send a global announcement to every server the bot is in.',
+    '`.syncga <#channel>` - Save this server channel for future global announcements.',
     '`.saclear <#channel>` - Delete this bot\'s messages from the selected channel.',
   ].join('\n');
 
@@ -1744,6 +1761,40 @@ async function handleSuperadminClear(message, args) {
   }
 }
 
+async function handleSyncga(message, args) {
+  if (message.author.id !== SUPERADMIN_USER_ID) {
+    return message.reply('You do not have permission to use this command.');
+  }
+
+  const input = args[0];
+  if (!input) {
+    return message.reply('Usage: `.syncga <#channel>`');
+  }
+
+  const channelId = input.replace(/^<#(\d+)>$/, '$1');
+  if (!/^\d+$/.test(channelId)) {
+    return message.reply('Usage: `.syncga <#channel>`');
+  }
+
+  const targetChannel = message.guild.channels.cache.get(channelId);
+  if (!targetChannel || !targetChannel.isTextBased() || targetChannel.isThread()) {
+    return message.reply('Please choose a normal text channel.');
+  }
+
+  const botPermissions = message.guild.members.me?.permissionsIn(targetChannel);
+  if (!botPermissions?.has([
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+  ])) {
+    return message.reply(`I need \`View Channel\` and \`Send Messages\` in ${targetChannel}.`);
+  }
+
+  darkItemState.syncChannels[message.guild.id] = targetChannel.id;
+  await saveDarkItemState();
+
+  return message.reply(`Global announcements will now post in ${targetChannel} for this server when using \`.linkga\`.`);
+}
+
 async function handleLinkga(message, text) {
   if (message.author.id !== SUPERADMIN_USER_ID) {
     return message.reply('❌ You don\'t have permission to use this command.');
@@ -1759,19 +1810,33 @@ async function handleLinkga(message, text) {
 
   for (const guild of client.guilds.cache.values()) {
     try {
-      // Fetch all channels if not already cached
       const channels = guild.channels.cache;
+      const syncedChannelId = darkItemState.syncChannels?.[guild.id];
+      let target = null;
 
-      // 1. Try preferred channel names first
-      let target = channels.find(
-        (ch) =>
-          ch.isTextBased() &&
-          !ch.isThread() &&
-          preferredNames.includes(ch.name.toLowerCase()) &&
-          ch.permissionsFor(guild.members.me)?.has('SendMessages'),
-      );
+      if (syncedChannelId) {
+        const syncedChannel = channels.get(syncedChannelId);
+        if (
+          syncedChannel?.isTextBased()
+          && !syncedChannel.isThread()
+          && syncedChannel.permissionsFor(guild.members.me)?.has('SendMessages')
+        ) {
+          target = syncedChannel;
+        } else {
+          console.warn(`[Linkga] Synced channel ${syncedChannelId} is unavailable in guild ${guild.name} (${guild.id}).`);
+        }
+      }
 
-      // 2. Fall back to the first writable text channel
+      if (!target) {
+        target = channels.find(
+          (ch) =>
+            ch.isTextBased() &&
+            !ch.isThread() &&
+            preferredNames.includes(ch.name.toLowerCase()) &&
+            ch.permissionsFor(guild.members.me)?.has('SendMessages'),
+        );
+      }
+
       if (!target) {
         target = channels.find(
           (ch) =>
@@ -2338,6 +2403,9 @@ client.on(Events.MessageCreate, async (message) => {
     case 'afk':
       return handleAfk(message);
 
+    case 'darkitemhelp':
+      return handleDarkItemHelp(message);
+
     case 'darkitem':
       return handleDarkItem(message, args);
 
@@ -2368,6 +2436,9 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'saclear':
       return handleSuperadminClear(message, args);
+
+    case 'syncga':
+      return handleSyncga(message, args);
 
     case 'linkga':
       return handleLinkga(message, args.join(' '));
