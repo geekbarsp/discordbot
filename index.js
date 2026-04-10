@@ -1793,7 +1793,7 @@ async function handleSyncga(message, args) {
   darkItemState.syncChannels[message.guild.id] = targetChannel.id;
   await saveDarkItemState();
 
-  return message.reply(`Global announcements will now post in ${targetChannel} for this server when using \`.linkga\`.`);
+  return message.reply(`Global announcements will now post in ${targetChannel} for this server when using \`Global Announcement\`.`);
 }
 
 async function handleLinkga(message, text) {
