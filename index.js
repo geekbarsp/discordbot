@@ -771,8 +771,14 @@ async function handleTrollAction(message, action) {
       name: `${action}-${targetUser.id}.png`,
     });
 
+    const actionMessages = {
+      slap: `${message.author} just slapped ${targetUser}`,
+      kick: `${message.author} just kicked ${targetUser}`,
+      throw: `${message.author} just threw ${targetUser}`,
+    };
+
     await message.channel.send({
-      content: `**${message.author.username}** used \`.${action}\` on ${targetUser}.`,
+      content: actionMessages[action] ?? `${message.author} just trolled ${targetUser}`,
       files: [attachment],
     });
   } catch (err) {
