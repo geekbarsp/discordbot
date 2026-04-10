@@ -705,7 +705,7 @@ function escapeSvgText(value) {
     .replace(/'/g, '&#39;');
 }
 
-async function fetchAvatarDataUri(user, size = 160) {
+async function fetchAvatarDataUri(user, size = 256) {
   const avatarUrl = user.displayAvatarURL({
     extension: 'png',
     size,
