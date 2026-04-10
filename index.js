@@ -408,6 +408,7 @@ function getGuildConfigCandidateChannels(guild, preferredChannelId = null) {
     guild.channels.cache.filter(
       (channel) =>
         channel.type === ChannelType.GuildText
+        && channel.name !== GUILD_CONFIG_CHANNEL_NAME
         && channel.permissionsFor(guild.members.me)?.has([
           PermissionFlagsBits.ViewChannel,
           PermissionFlagsBits.SendMessages,
@@ -432,9 +433,52 @@ function getGuildConfigCandidateChannels(guild, preferredChannelId = null) {
   });
 }
 
-async function readGuildConfigMessage(guild, preferredChannelId = null) {
-  const channels = getGuildConfigCandidateChannels(guild, preferredChannelId);
+function getExistingGuildConfigChannel(guild) {
+  return (
+    guild.channels.cache.find(
+      (channel) =>
+        channel.type === ChannelType.GuildText
+        && channel.name === GUILD_CONFIG_CHANNEL_NAME,
+    ) ?? null
+  );
+}
 
+async function ensureGuildConfigChannel(guild) {
+  const existingChannel = getExistingGuildConfigChannel(guild);
+  if (existingChannel) {
+    return existingChannel;
+  }
+
+  if (!guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return null;
+  }
+
+  try {
+    return await guild.channels.create({
+      name: GUILD_CONFIG_CHANNEL_NAME,
+      type: ChannelType.GuildText,
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionFlagsBits.ViewChannel],
+        },
+        {
+          id: guild.members.me.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+          ],
+        },
+      ],
+    });
+  } catch (err) {
+    console.warn(`[GuildConfig] Could not create config channel in guild ${guild.id}: ${err.message}`);
+    return null;
+  }
+}
+
+async function readGuildConfigMessageFromChannels(channels) {
   for (const channel of channels) {
     try {
       const messages = await channel.messages.fetch({ limit: 30 });
@@ -448,11 +492,21 @@ async function readGuildConfigMessage(guild, preferredChannelId = null) {
         return configMessage;
       }
     } catch (err) {
-      console.warn(`[GuildConfig] Could not scan ${channel.id} in guild ${guild.id}: ${err.message}`);
+      console.warn(`[GuildConfig] Could not scan ${channel.id} in guild ${channel.guild.id}: ${err.message}`);
     }
   }
 
   return null;
+}
+
+async function readGuildConfigMessage(guild, preferredChannelId = null) {
+  const configChannel = getExistingGuildConfigChannel(guild);
+  const channels = [
+    ...(configChannel ? [configChannel] : []),
+    ...getGuildConfigCandidateChannels(guild, preferredChannelId),
+  ];
+
+  return readGuildConfigMessageFromChannels(channels);
 }
 
 async function loadGuildConfigFromDiscord(guild) {
@@ -480,10 +534,16 @@ async function saveGuildConfigToDiscord(guild, preferredChannelId = null) {
     return false;
   }
 
-  const existingMessage = await readGuildConfigMessage(guild, preferredChannelId);
+  const configChannel = await ensureGuildConfigChannel(guild);
+  if (!configChannel) {
+    return false;
+  }
+
+  const existingMessage = await readGuildConfigMessageFromChannels([configChannel]);
   if (existingMessage) {
     try {
       await existingMessage.edit(content);
+      await deleteVisibleGuildConfigMessages(guild, existingMessage.id, preferredChannelId);
       return true;
     } catch (err) {
       console.warn(`[GuildConfig] Could not update config message in guild ${guild.id}: ${err.message}`);
@@ -491,13 +551,9 @@ async function saveGuildConfigToDiscord(guild, preferredChannelId = null) {
     }
   }
 
-  const targetChannel = getGuildConfigCandidateChannels(guild, preferredChannelId)[0] ?? null;
-  if (!targetChannel) {
-    return false;
-  }
-
   try {
-    await targetChannel.send(content);
+    const createdMessage = await configChannel.send(content);
+    await deleteVisibleGuildConfigMessages(guild, createdMessage.id, preferredChannelId);
     return true;
   } catch (err) {
     console.warn(`[GuildConfig] Could not create config message in guild ${guild.id}: ${err.message}`);
@@ -510,19 +566,24 @@ async function persistGuildConfig(guild, preferredChannelId = null) {
   await saveGuildConfigToDiscord(guild, preferredChannelId);
 }
 
-async function deleteLegacyGuildConfigChannels(guild) {
-  const channels = guild.channels.cache.filter(
-    (channel) =>
-      channel.type === ChannelType.GuildText
-      && channel.name === GUILD_CONFIG_CHANNEL_NAME,
-  );
+async function deleteVisibleGuildConfigMessages(guild, keepMessageId = null, preferredChannelId = null) {
+  const channels = getGuildConfigCandidateChannels(guild, preferredChannelId);
 
-  for (const channel of channels.values()) {
+  for (const channel of channels) {
     try {
-      await channel.delete('Removing legacy Dark Bot config channel');
-      console.log(`[GuildConfig] Deleted legacy config channel in guild ${guild.id}.`);
+      const messages = await channel.messages.fetch({ limit: 30 });
+      const configMessages = messages.filter(
+        (message) =>
+          message.author.id === client.user.id
+          && message.id !== keepMessageId
+          && message.content.startsWith(`${GUILD_CONFIG_MESSAGE_PREFIX}\n`),
+      );
+
+      for (const configMessage of configMessages.values()) {
+        await configMessage.delete().catch(() => null);
+      }
     } catch (err) {
-      console.warn(`[GuildConfig] Could not delete legacy config channel ${channel.id} in guild ${guild.id}: ${err.message}`);
+      console.warn(`[GuildConfig] Could not clean visible config messages in ${channel.id} for guild ${guild.id}: ${err.message}`);
     }
   }
 }
@@ -2670,8 +2731,8 @@ client.once(Events.ClientReady, async (c) => {
   c.user.setActivity('24/7 | .help for commands');
 
   for (const guild of c.guilds.cache.values()) {
-    await deleteLegacyGuildConfigChannels(guild);
     await loadGuildConfigFromDiscord(guild);
+    await saveGuildConfigToDiscord(guild);
   }
 
   await joinAllPermanentChannels();
@@ -2688,8 +2749,8 @@ client.once(Events.ClientReady, async (c) => {
 // ─── Event: guildCreate (join new guilds) ────────────────────────────────────────
 
 client.on(Events.GuildCreate, async (guild) => {
-  await deleteLegacyGuildConfigChannels(guild);
   await loadGuildConfigFromDiscord(guild);
+  await saveGuildConfigToDiscord(guild);
 
   const channelIds = PERMANENT_VOICE_CHANNELS[guild.id];
   if (channelIds) {
