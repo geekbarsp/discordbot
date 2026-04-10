@@ -1,7 +1,8 @@
 import 'dotenv/config';
-import { ChannelType, Client, EmbedBuilder, GatewayIntentBits, Events, PermissionFlagsBits } from 'discord.js';
+import { AttachmentBuilder, ChannelType, Client, EmbedBuilder, GatewayIntentBits, Events, PermissionFlagsBits } from 'discord.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import http from 'node:http';
+import { Resvg } from '@resvg/resvg-js';
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
@@ -669,6 +670,179 @@ function resolveDarkItemChannel(guild, value, fallbackChannel) {
 
   const channel = guild.channels.cache.get(channelId);
   return channel?.isTextBased() ? channel : null;
+}
+
+function bufferToDataUri(buffer, mimeType = 'image/png') {
+  return `data:${mimeType};base64,${buffer.toString('base64')}`;
+}
+
+function escapeSvgText(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function fetchAvatarDataUri(user, size = 160) {
+  const avatarUrl = user.displayAvatarURL({
+    extension: 'png',
+    size,
+    forceStatic: true,
+  });
+  const response = await fetch(avatarUrl);
+  if (!response.ok) {
+    throw new Error(`Avatar request failed with status ${response.status}`);
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  return bufferToDataUri(bytes);
+}
+
+function createTrollSceneSvg(action, avatarDataUri, displayName) {
+  const safeName = escapeSvgText(displayName);
+  const configs = {
+    slap: {
+      title: 'SLAP',
+      accent: '#f97316',
+      actionLine: `${safeName} got slapped`,
+      scene: `
+        <ellipse cx="240" cy="360" rx="110" ry="28" fill="rgba(15,23,42,0.16)" />
+        <ellipse cx="600" cy="360" rx="120" ry="30" fill="rgba(15,23,42,0.16)" />
+        <g>
+          <circle cx="240" cy="135" r="52" fill="#f7c59f" />
+          <rect x="196" y="188" width="88" height="114" rx="26" fill="#2563eb" />
+          <line x1="212" y1="210" x2="152" y2="170" stroke="#2563eb" stroke-width="24" stroke-linecap="round" />
+          <line x1="268" y1="205" x2="388" y2="166" stroke="#2563eb" stroke-width="24" stroke-linecap="round" />
+          <line x1="220" y1="300" x2="195" y2="356" stroke="#1e3a8a" stroke-width="24" stroke-linecap="round" />
+          <line x1="260" y1="300" x2="286" y2="356" stroke="#1e3a8a" stroke-width="24" stroke-linecap="round" />
+        </g>
+        <g transform="rotate(12 595 215)">
+          <circle cx="595" cy="165" r="56" fill="url(#avatarFill)" />
+          <rect x="548" y="222" width="94" height="98" rx="28" fill="#ef4444" />
+          <line x1="571" y1="246" x2="520" y2="218" stroke="#ef4444" stroke-width="23" stroke-linecap="round" />
+          <line x1="620" y1="244" x2="664" y2="220" stroke="#ef4444" stroke-width="23" stroke-linecap="round" />
+          <line x1="575" y1="316" x2="545" y2="366" stroke="#7f1d1d" stroke-width="23" stroke-linecap="round" />
+          <line x1="616" y1="316" x2="640" y2="366" stroke="#7f1d1d" stroke-width="23" stroke-linecap="round" />
+        </g>
+        <text x="410" y="120" text-anchor="middle" font-size="52" font-weight="900" fill="#fff7ed" transform="rotate(-8 410 120)">SMACK</text>
+        <path d="M392 157 C436 138 462 148 490 176" fill="none" stroke="#fff7ed" stroke-width="14" stroke-linecap="round"/>
+      `,
+    },
+    kick: {
+      title: 'KICK',
+      accent: '#22c55e',
+      actionLine: `${safeName} got kicked`,
+      scene: `
+        <ellipse cx="250" cy="362" rx="118" ry="28" fill="rgba(15,23,42,0.16)" />
+        <ellipse cx="598" cy="362" rx="132" ry="30" fill="rgba(15,23,42,0.16)" />
+        <g>
+          <circle cx="248" cy="138" r="52" fill="#f7c59f" />
+          <rect x="202" y="192" width="92" height="112" rx="26" fill="#16a34a" />
+          <line x1="225" y1="214" x2="173" y2="252" stroke="#16a34a" stroke-width="24" stroke-linecap="round" />
+          <line x1="272" y1="214" x2="320" y2="248" stroke="#16a34a" stroke-width="24" stroke-linecap="round" />
+          <line x1="228" y1="302" x2="188" y2="352" stroke="#14532d" stroke-width="24" stroke-linecap="round" />
+          <line x1="268" y1="304" x2="438" y2="224" stroke="#14532d" stroke-width="24" stroke-linecap="round" />
+        </g>
+        <g transform="translate(62 -18) rotate(24 530 214)">
+          <circle cx="530" cy="178" r="56" fill="url(#avatarFill)" />
+          <rect x="484" y="236" width="92" height="96" rx="28" fill="#f59e0b" />
+          <line x1="506" y1="260" x2="458" y2="226" stroke="#f59e0b" stroke-width="23" stroke-linecap="round" />
+          <line x1="554" y1="260" x2="600" y2="226" stroke="#f59e0b" stroke-width="23" stroke-linecap="round" />
+          <line x1="510" y1="330" x2="482" y2="380" stroke="#92400e" stroke-width="23" stroke-linecap="round" />
+          <line x1="550" y1="330" x2="580" y2="380" stroke="#92400e" stroke-width="23" stroke-linecap="round" />
+        </g>
+        <text x="430" y="110" text-anchor="middle" font-size="52" font-weight="900" fill="#f0fdf4" transform="rotate(-10 430 110)">BOOT</text>
+        <path d="M410 138 C446 120 486 122 528 152" fill="none" stroke="#dcfce7" stroke-width="12" stroke-linecap="round"/>
+      `,
+    },
+    throw: {
+      title: 'THROW',
+      accent: '#8b5cf6',
+      actionLine: `${safeName} got launched`,
+      scene: `
+        <ellipse cx="238" cy="362" rx="110" ry="28" fill="rgba(15,23,42,0.16)" />
+        <ellipse cx="626" cy="358" rx="112" ry="28" fill="rgba(15,23,42,0.16)" />
+        <g>
+          <circle cx="238" cy="138" r="52" fill="#f7c59f" />
+          <rect x="192" y="192" width="92" height="114" rx="26" fill="#7c3aed" />
+          <line x1="216" y1="214" x2="180" y2="246" stroke="#7c3aed" stroke-width="24" stroke-linecap="round" />
+          <line x1="266" y1="210" x2="368" y2="132" stroke="#7c3aed" stroke-width="24" stroke-linecap="round" />
+          <line x1="220" y1="304" x2="194" y2="358" stroke="#4c1d95" stroke-width="24" stroke-linecap="round" />
+          <line x1="260" y1="304" x2="286" y2="358" stroke="#4c1d95" stroke-width="24" stroke-linecap="round" />
+        </g>
+        <g transform="translate(64 -70) rotate(-18 560 120)">
+          <circle cx="560" cy="138" r="56" fill="url(#avatarFill)" />
+          <rect x="514" y="196" width="92" height="96" rx="28" fill="#ec4899" />
+          <line x1="536" y1="220" x2="492" y2="190" stroke="#ec4899" stroke-width="23" stroke-linecap="round" />
+          <line x1="584" y1="220" x2="632" y2="192" stroke="#ec4899" stroke-width="23" stroke-linecap="round" />
+          <line x1="540" y1="290" x2="508" y2="338" stroke="#9d174d" stroke-width="23" stroke-linecap="round" />
+          <line x1="582" y1="290" x2="612" y2="338" stroke="#9d174d" stroke-width="23" stroke-linecap="round" />
+        </g>
+        <text x="440" y="92" text-anchor="middle" font-size="50" font-weight="900" fill="#f5f3ff" transform="rotate(-12 440 92)">YEET</text>
+        <path d="M352 154 C430 100 510 88 588 118" fill="none" stroke="#ede9fe" stroke-width="12" stroke-linecap="round" stroke-dasharray="12 16"/>
+      `,
+    },
+  };
+
+  const config = configs[action];
+  if (!config) {
+    throw new Error(`Unknown troll action: ${action}`);
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+  <svg width="800" height="420" viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#0f172a" />
+        <stop offset="100%" stop-color="${config.accent}" />
+      </linearGradient>
+      <pattern id="avatarFill" width="1" height="1" patternContentUnits="objectBoundingBox">
+        <image href="${avatarDataUri}" width="1" height="1" preserveAspectRatio="xMidYMid slice" />
+      </pattern>
+    </defs>
+    <rect width="800" height="420" rx="28" fill="url(#bg)" />
+    <rect x="24" y="24" width="752" height="372" rx="24" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.14)" />
+    <text x="42" y="68" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="900" fill="#ffffff">${config.title}</text>
+    <text x="42" y="104" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" fill="rgba(255,255,255,0.84)">${config.actionLine}</text>
+    ${config.scene}
+  </svg>`;
+}
+
+async function renderTrollActionImage(action, user) {
+  const avatarDataUri = await fetchAvatarDataUri(user);
+  const svg = createTrollSceneSvg(action, avatarDataUri, user.globalName ?? user.username);
+  const resvg = new Resvg(svg, {
+    fitTo: {
+      mode: 'width',
+      value: 800,
+    },
+  });
+
+  return resvg.render().asPng();
+}
+
+async function handleTrollAction(message, action) {
+  const targetUser = message.mentions.users.first();
+  if (!targetUser) {
+    return message.reply(`Usage: \`.${action} @user\``);
+  }
+
+  try {
+    const png = await renderTrollActionImage(action, targetUser);
+    const attachment = new AttachmentBuilder(png, {
+      name: `${action}-${targetUser.id}.png`,
+    });
+
+    await message.channel.send({
+      content: `**${message.author.username}** used \`.${action}\` on ${targetUser}.`,
+      files: [attachment],
+    });
+  } catch (err) {
+    console.error(`[TrollUser] ${action} render error:`, err);
+    await message.reply(`I could not generate the ${action} image: ${err.message}`);
+  }
 }
 
 function createSpotifyAuthorizeUrl() {
@@ -1668,6 +1842,22 @@ async function handleMusicHelp(message) {
   await message.reply(helpText);
 }
 
+async function handleTrollUserHelp(message) {
+  const embed = new EmbedBuilder()
+    .setColor(0xef4444)
+    .setTitle('Troll User Commands')
+    .setDescription('Fun avatar-based action commands for personal use.')
+    .addFields(
+      { name: '.slap @user', value: 'Slap the mentioned user.', inline: false },
+      { name: '.kick @user', value: 'Kick the mentioned user.', inline: false },
+      { name: '.throw @user', value: 'Throw the mentioned user.', inline: false },
+      { name: '.trolluserhelp', value: 'Show this help menu.', inline: false },
+    )
+    .setFooter({ text: 'Target a user mention to generate an image.' });
+
+  await message.reply({ embeds: [embed] });
+}
+
 async function handleHelp(message) {
   const helpText = [
     '**Bot Commands**',
@@ -1675,6 +1865,7 @@ async function handleHelp(message) {
     '`.afk` - Mark yourself as AFK.',
     '`.darkitemhelp` - Show DarkItem-specific commands.',
     '`.musichelp` - Show music-specific commands.',
+    '`.trolluserhelp` - Show troll user commands.',
     '`.purge <count>` - Delete a number of recent messages. Manage Messages only.',
     '`.serverstat` - Create or refresh the server statistics voice channels. Admin only.',
     '`.ngaming`, `.nstudy`, `.nfriendlyorg`, `.npersonal`, `.nhackergroup` - Two-step admin-only server layout presets.',
@@ -2419,6 +2610,9 @@ client.on(Events.MessageCreate, async (message) => {
     case 'musichelp':
       return handleMusicHelp(message);
 
+    case 'trolluserhelp':
+      return handleTrollUserHelp(message);
+
     case 'darkitem':
       return handleDarkItem(message, args);
 
@@ -2458,6 +2652,11 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'nuke':
       return handleNuke(message, args);
+
+    case 'slap':
+    case 'kick':
+    case 'throw':
+      return handleTrollAction(message, command);
 
     case 'p':
     case 'play':
