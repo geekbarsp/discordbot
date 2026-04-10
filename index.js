@@ -103,13 +103,13 @@ const TROLL_USER_TEMPLATES = {
     file: new URL('./.kick.png', import.meta.url),
     width: 456,
     height: 566,
-    avatar: { x: 43, y: 57, width: 88, height: 88, rx: 44, ry: 44, rotate: -6 },
+    avatar: { x: 28, y: 46, width: 118, height: 118, rx: 59, ry: 59, rotate: -6 },
   },
   throw: {
     file: new URL('./.throw.png', import.meta.url),
     width: 484,
     height: 202,
-    avatar: { x: 140, y: 82, width: 62, height: 62, rx: 20, ry: 20, rotate: -4 },
+    avatar: { x: 118, y: 70, width: 102, height: 102, rx: 28, ry: 28, rotate: -4 },
   },
 };
 const SERVER_LAYOUT_CONFIRM_MS = 2 * 60 * 1000;
