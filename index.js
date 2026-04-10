@@ -641,8 +641,6 @@ async function postConfessionSticky(guild) {
     .setTitle('Anonymous Confessions')
     .setDescription('Use `.confess <message>` to share your feelings, secrets, crushes, or late-night thoughts with the server while staying anonymous.')
     .addFields({
-      name: 'Confessions Posted',
-      value: String(config.count ?? 0),
       inline: true,
     })
     .setFooter({ text: 'Be kind. Keep it respectful. Your message will be posted by the bot.' });
