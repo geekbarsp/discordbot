@@ -195,6 +195,7 @@ let darkItemState = {
   postedDeals: {},
   syncChannels: {},
   afkStates: {},
+  confessions: {},
 };
 let darkItemPollPromise = null;
 
@@ -326,6 +327,7 @@ async function loadDarkItemState() {
       postedDeals: parsed?.postedDeals && typeof parsed.postedDeals === 'object' ? parsed.postedDeals : {},
       syncChannels: parsed?.syncChannels && typeof parsed.syncChannels === 'object' ? parsed.syncChannels : {},
       afkStates: parsed?.afkStates && typeof parsed.afkStates === 'object' ? parsed.afkStates : {},
+      confessions: parsed?.confessions && typeof parsed.confessions === 'object' ? parsed.confessions : {},
     };
   } catch (err) {
     if (err?.code !== 'ENOENT') {
@@ -337,6 +339,7 @@ async function loadDarkItemState() {
       postedDeals: {},
       syncChannels: {},
       afkStates: {},
+      confessions: {},
     };
   }
 }
@@ -349,6 +352,7 @@ function getGuildConfigPayload(guildId) {
   const subscription = darkItemState.subscriptions?.[guildId] ?? null;
   const postedDealIds = Object.keys(darkItemState.postedDeals?.[guildId] ?? {}).slice(-100);
   const syncChannelId = darkItemState.syncChannels?.[guildId] ?? null;
+  const confessionConfig = darkItemState.confessions?.[guildId] ?? null;
   const permanentVoiceChannelIds = getPermanentChannelIds(guildId);
   const afkEntries = Object.entries(darkItemState.afkStates ?? {})
     .filter(([, state]) => state?.guildId === guildId)
@@ -361,6 +365,7 @@ function getGuildConfigPayload(guildId) {
     darkItemSubscription: subscription,
     postedDealIds,
     syncChannelId,
+    confessionConfig,
     permanentVoiceChannelIds,
     afkEntries,
   };
@@ -379,6 +384,10 @@ function applyGuildConfigPayload(guildId, payload) {
 
   if (payload?.syncChannelId) {
     darkItemState.syncChannels[guildId] = payload.syncChannelId;
+  }
+
+  if (payload?.confessionConfig && typeof payload.confessionConfig === 'object') {
+    darkItemState.confessions[guildId] = payload.confessionConfig;
   }
 
   if (Array.isArray(payload?.permanentVoiceChannelIds)) {
@@ -554,6 +563,93 @@ function normalizeDarkItemStoreChoice(value) {
   }
 
   return null;
+}
+
+function getConfessionConfig(guildId) {
+  const config = darkItemState.confessions?.[guildId];
+  return config && typeof config === 'object' ? config : null;
+}
+
+function resolveTextChannelFromInput(guild, input, fallbackChannel = null) {
+  const trimmed = String(input || '').trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.toLowerCase() === 'here') {
+    return fallbackChannel?.isTextBased?.() && !fallbackChannel.isThread() ? fallbackChannel : null;
+  }
+
+  const channelId = trimmed.replace(/^<#(\d+)>$/, '$1');
+  if (!/^\d+$/.test(channelId)) {
+    return null;
+  }
+
+  const channel = guild.channels.cache.get(channelId);
+  if (!channel || !channel.isTextBased() || channel.isThread()) {
+    return null;
+  }
+
+  return channel;
+}
+
+async function deleteConfessionSticky(guild, config = getConfessionConfig(guild.id)) {
+  if (!config?.channelId || !config?.stickyMessageId) {
+    return;
+  }
+
+  const channel = guild.channels.cache.get(config.channelId);
+  if (!channel?.isTextBased?.() || channel.isThread()) {
+    config.stickyMessageId = null;
+    return;
+  }
+
+  try {
+    const stickyMessage = await channel.messages.fetch(config.stickyMessageId);
+    await stickyMessage.delete();
+  } catch {
+    // Ignore missing or already-deleted sticky messages.
+  }
+
+  config.stickyMessageId = null;
+}
+
+async function postConfessionSticky(guild) {
+  const config = getConfessionConfig(guild.id);
+  if (!config?.channelId) {
+    return null;
+  }
+
+  const channel = guild.channels.cache.get(config.channelId);
+  if (!channel?.isTextBased?.() || channel.isThread()) {
+    return null;
+  }
+
+  const botPermissions = guild.members.me?.permissionsIn(channel);
+  if (!botPermissions?.has([
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.EmbedLinks,
+  ])) {
+    return null;
+  }
+
+  await deleteConfessionSticky(guild, config);
+
+  const embed = new EmbedBuilder()
+    .setColor(0xec4899)
+    .setTitle('Anonymous Confessions')
+    .setDescription('Use `.confess <message>` to share your feelings, secrets, crushes, or late-night thoughts with the server while staying anonymous.')
+    .addFields({
+      name: 'Confessions Posted',
+      value: String(config.count ?? 0),
+      inline: true,
+    })
+    .setFooter({ text: 'Be kind. Keep it respectful. Your message will be posted by the bot.' });
+
+  const stickyMessage = await channel.send({ embeds: [embed] });
+  config.stickyMessageId = stickyMessage.id;
+  return stickyMessage;
 }
 
 function formatPriceLabel(value, fallback = 'Unknown') {
@@ -1969,6 +2065,117 @@ async function handleDarkItem(message, args) {
   }
 }
 
+async function handleConfessSet(message, args) {
+  const memberPermissions = message.member?.permissions;
+  if (
+    !memberPermissions?.has(PermissionFlagsBits.Administrator)
+    && !memberPermissions?.has(PermissionFlagsBits.ManageChannels)
+  ) {
+    return message.reply('You need `Manage Channels` or `Administrator` to use `.confessset`.');
+  }
+
+  const input = args[0];
+  if (!input) {
+    return message.reply('Usage: `.confessset <#channel>`');
+  }
+
+  const targetChannel = resolveTextChannelFromInput(message.guild, input, message.channel);
+  if (!targetChannel) {
+    return message.reply('Please choose a normal text channel.');
+  }
+
+  const botPermissions = message.guild.members.me?.permissionsIn(targetChannel);
+  if (!botPermissions?.has([
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.EmbedLinks,
+    PermissionFlagsBits.ReadMessageHistory,
+  ])) {
+    return message.reply(`I need \`View Channel\`, \`Send Messages\`, \`Embed Links\`, and \`Read Message History\` in ${targetChannel}.`);
+  }
+
+  const existingConfig = getConfessionConfig(message.guild.id);
+  if (existingConfig?.channelId && existingConfig.channelId !== targetChannel.id) {
+    await deleteConfessionSticky(message.guild, existingConfig);
+  }
+
+  darkItemState.confessions[message.guild.id] = {
+    channelId: targetChannel.id,
+    stickyMessageId: null,
+    count: existingConfig?.count ?? 0,
+    updatedAt: new Date().toISOString(),
+    updatedBy: message.author.id,
+  };
+
+  await postConfessionSticky(message.guild);
+  await persistGuildConfig(message.guild, targetChannel.id);
+
+  return message.reply(`Confessions are now set to ${targetChannel}. Members can use \`.confess <message>\` and the bot will post it anonymously.`);
+}
+
+async function handleConfess(message, text) {
+  const confessionText = String(text || '').trim();
+  if (!confessionText) {
+    return message.reply('Usage: `.confess <message>`');
+  }
+
+  const config = getConfessionConfig(message.guild.id);
+  if (!config?.channelId) {
+    return message.reply('Confessions are not set up yet. Ask an admin to use `.confessset <#channel>` first.');
+  }
+
+  const targetChannel = message.guild.channels.cache.get(config.channelId);
+  if (!targetChannel?.isTextBased?.() || targetChannel.isThread()) {
+    return message.reply('The confession channel is missing or no longer a normal text channel. Ask an admin to run `.confessset` again.');
+  }
+
+  const botPermissions = message.guild.members.me?.permissionsIn(targetChannel);
+  if (!botPermissions?.has([
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.EmbedLinks,
+    PermissionFlagsBits.ReadMessageHistory,
+  ])) {
+    return message.reply(`I need \`View Channel\`, \`Send Messages\`, \`Embed Links\`, and \`Read Message History\` in ${targetChannel} before I can post confessions there.`);
+  }
+
+  const sourcePermissions = message.guild.members.me?.permissionsIn(message.channel);
+  let deletedCommandMessage = false;
+  if (sourcePermissions?.has(PermissionFlagsBits.ManageMessages)) {
+    try {
+      await message.delete();
+      deletedCommandMessage = true;
+    } catch {
+      deletedCommandMessage = false;
+    }
+  }
+
+  config.count = (Number(config.count) || 0) + 1;
+  config.updatedAt = new Date().toISOString();
+  config.updatedBy = message.author.id;
+
+  const confessionEmbed = new EmbedBuilder()
+    .setColor(0xf472b6)
+    .setTitle(`Anonymous Confession #${config.count}`)
+    .setDescription(confessionText)
+    .setFooter({ text: 'Sent anonymously through Dark Bot' })
+    .setTimestamp();
+
+  await targetChannel.send({ embeds: [confessionEmbed] });
+  await postConfessionSticky(message.guild);
+  await persistGuildConfig(message.guild, targetChannel.id);
+
+  await message.author.send(
+    `Your anonymous confession #${config.count} was posted in #${targetChannel.name} on **${message.guild.name}**.`,
+  ).catch(() => null);
+
+  if (!deletedCommandMessage) {
+    return message.reply('Your confession was posted, but I could not delete your command message here. Give me `Manage Messages` in this channel for better anonymity.');
+  }
+
+  return null;
+}
+
 async function sendHelpEmbed(message, title, description, lines, color = 0x2563eb) {
   const embed = new EmbedBuilder()
     .setColor(color)
@@ -2000,6 +2207,20 @@ async function handleDarkItemHelp(message) {
       '`.darkitem off` - Disable DarkItem alerts for this server.',
     ],
     0x22c55e,
+  );
+}
+
+async function handleConfessionHelp(message) {
+  await sendHelpEmbed(
+    message,
+    'Confession Commands',
+    'Anonymous confession setup and posting commands.',
+    [
+      '`.confessionhelp` - Show confession-specific commands.',
+      '`.confessset <#channel>` - Set the confession channel and post the sticky prompt. Admin or Manage Channels only.',
+      '`.confess <message>` - Post an anonymous confession through the bot.',
+    ],
+    0xec4899,
   );
 }
 
@@ -2041,6 +2262,7 @@ async function handleHelp(message) {
     [
       '`.help` - Show this command list.',
       '`.afk` - Mark yourself as AFK.',
+      '`.confessionhelp` - Show confession-specific commands.',
       '`.darkitemhelp` - Show DarkItem-specific commands.',
       '`.musichelp` - Show music-specific commands.',
       '`.trolluserhelp` - Show troll user commands.',
@@ -2803,6 +3025,9 @@ client.on(Events.MessageCreate, async (message) => {
     case 'afk':
       return handleAfk(message);
 
+    case 'confessionhelp':
+      return handleConfessionHelp(message);
+
     case 'darkitemhelp':
       return handleDarkItemHelp(message);
 
@@ -2814,6 +3039,12 @@ client.on(Events.MessageCreate, async (message) => {
 
     case 'darkitem':
       return handleDarkItem(message, args);
+
+    case 'confessset':
+      return handleConfessSet(message, args);
+
+    case 'confess':
+      return handleConfess(message, args.join(' '));
 
     case 'purge':
       return handlePurge(message, args);
