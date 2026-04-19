@@ -85,10 +85,10 @@ const PREFIX = '.';
 const SUPERADMIN_USER_ID = '456699600154263555';
 const SERVER_STAT_CATEGORY_NAME = 'Server Statistics';
 const SERVER_STAT_CHANNEL_LABELS = {
-  totalMembers: 'All Members',
-  userMembers: 'Members',
-  botMembers: 'Bots',
-  boosts: 'Boosts',
+  totalMembers: '👥 Members',
+  userMembers: '👤 Users',
+  botMembers: '🤖 Bots',
+  boosts: '⭐ Boosts',
 };
 const DARKITEM_DATA_FILE = new URL('./darkitem-data.json', import.meta.url);
 const DARKITEM_POLL_INTERVAL_MS = 15 * 60 * 1000;
@@ -185,7 +185,6 @@ const openai = OPENAI_API_KEY
 const musicStates = new Map();
 const afkStates = new Map();
 const pendingServerLayouts = new Map();
-const serverStatSnapshots = new Map();
 const pendingServerStatUpdates = new Map();
 const pendingPermanentVoiceJoins = new Map();
 const suspendedPermanentVoiceGuilds = new Set();
@@ -2477,7 +2476,7 @@ function getServerStatCategory(guild) {
   ) ?? null;
 }
 
-function getServerStatVoiceChannels(guild, categoryId) {
+function getServerStatChannels(guild, categoryId) {
   const voiceChannels = guild.channels.cache.filter(
     (channel) => channel.parentId === categoryId && channel.type === ChannelType.GuildVoice,
   );
@@ -2490,96 +2489,30 @@ function getServerStatVoiceChannels(guild, categoryId) {
   };
 }
 
-function parseCountFromChannelName(channel, label) {
-  if (!channel) {
-    return null;
-  }
-
-  const prefix = `${label}:`;
-  if (!channel.name.startsWith(prefix)) {
-    return null;
-  }
-
-  const value = Number.parseInt(channel.name.slice(prefix.length).trim(), 10);
-  return Number.isFinite(value) ? value : null;
-}
-
-function getInitialServerStatSnapshot(guild, channels) {
-  const cachedMembers = guild.members.cache;
-  const cachedUsers = cachedMembers.filter((member) => !member.user.bot).size;
-  const cachedBots = cachedMembers.filter((member) => member.user.bot).size;
-  const cachedKnownMembers = cachedUsers + cachedBots;
-  const totalMembers = guild.memberCount ?? cachedMembers.size ?? 0;
-
-  if (cachedKnownMembers > 0 || totalMembers === 0) {
-    return {
-      totalMembers,
-      userMembers: cachedUsers,
-      botMembers: cachedBots,
-      boosts: guild.premiumSubscriptionCount ?? 0,
-    };
-  }
-
-  const parsedUsers = parseCountFromChannelName(channels.userMembers, SERVER_STAT_CHANNEL_LABELS.userMembers);
-  const parsedBots = parseCountFromChannelName(channels.botMembers, SERVER_STAT_CHANNEL_LABELS.botMembers);
+async function getAccurateMemberCounts(guild) {
+  // Fetch all members to ensure accuracy
+  const members = await guild.members.fetch();
+  const users = members.filter((m) => !m.user.bot).size;
+  const bots = members.filter((m) => m.user.bot).size;
 
   return {
-    totalMembers,
-    userMembers: parsedUsers ?? Math.max(totalMembers - (parsedBots ?? 0), 0),
-    botMembers: parsedBots ?? 0,
+    totalMembers: members.size,
+    userMembers: users,
+    botMembers: bots,
     boosts: guild.premiumSubscriptionCount ?? 0,
   };
 }
 
-function getServerStatSnapshot(guild, channels) {
-  const existing = serverStatSnapshots.get(guild.id);
+function scheduleStatUpdate(guild, delayMs = 500) {
+  const existing = pendingServerStatUpdates.get(guild.id);
   if (existing) {
-    return {
-      ...existing,
-      totalMembers: guild.memberCount ?? existing.totalMembers ?? 0,
-      boosts: guild.premiumSubscriptionCount ?? existing.boosts ?? 0,
-    };
-  }
-
-  const initial = getInitialServerStatSnapshot(guild, channels);
-  serverStatSnapshots.set(guild.id, initial);
-  return initial;
-}
-
-function updateServerStatSnapshotForMember(member, direction) {
-  const guild = member.guild;
-  const current = serverStatSnapshots.get(guild.id) ?? {
-    totalMembers: guild.memberCount ?? guild.members.cache.size ?? 0,
-    userMembers: guild.members.cache.filter((cachedMember) => !cachedMember.user.bot).size,
-    botMembers: guild.members.cache.filter((cachedMember) => cachedMember.user.bot).size,
-    boosts: guild.premiumSubscriptionCount ?? 0,
-  };
-
-  const next = {
-    ...current,
-    totalMembers: Math.max((guild.memberCount ?? current.totalMembers ?? 0), 0),
-    boosts: guild.premiumSubscriptionCount ?? current.boosts ?? 0,
-  };
-
-  if (member.user.bot) {
-    next.botMembers = Math.max((next.botMembers ?? 0) + direction, 0);
-  } else {
-    next.userMembers = Math.max((next.userMembers ?? 0) + direction, 0);
-  }
-
-  serverStatSnapshots.set(guild.id, next);
-}
-
-function scheduleServerStatsUpdate(guild, delayMs = 1500) {
-  const existingTimeout = pendingServerStatUpdates.get(guild.id);
-  if (existingTimeout) {
-    clearTimeout(existingTimeout);
+    clearTimeout(existing);
   }
 
   const timeout = setTimeout(async () => {
     pendingServerStatUpdates.delete(guild.id);
     try {
-      await updateServerStatsForGuild(guild);
+      await updateServerStatChannels(guild);
     } catch (err) {
       console.error(`[ServerStats] Failed to update stats for guild ${guild.id}:`, err);
     }
@@ -2588,19 +2521,31 @@ function scheduleServerStatsUpdate(guild, delayMs = 1500) {
   pendingServerStatUpdates.set(guild.id, timeout);
 }
 
-async function updateServerStatsForGuild(guild) {
+// Keep alias so existing call-sites (ClientReady, GuildCreate) continue to work.
+function scheduleServerStatsUpdate(guild, delayMs = 500) {
+  scheduleStatUpdate(guild, delayMs);
+}
+
+async function updateServerStatChannels(guild) {
   const category = getServerStatCategory(guild);
   if (!category) {
     return;
   }
 
-  const channels = getServerStatVoiceChannels(guild, category.id);
+  const channels = getServerStatChannels(guild, category.id);
   if (!channels.totalMembers && !channels.userMembers && !channels.botMembers && !channels.boosts) {
     return;
   }
 
-  const counts = getServerStatSnapshot(guild, channels);
-  serverStatSnapshots.set(guild.id, counts);
+  let counts;
+  try {
+    counts = await getAccurateMemberCounts(guild);
+  } catch (err) {
+    console.error(`[ServerStats] Could not fetch member counts for guild ${guild.id}:`, err.message);
+    return;
+  }
+
+  console.log(`[ServerStats] Updating guild ${guild.id}: total=${counts.totalMembers} users=${counts.userMembers} bots=${counts.botMembers} boosts=${counts.boosts}`);
 
   await Promise.all(
     Object.entries(channels).map(async ([key, channel]) => {
@@ -2610,7 +2555,11 @@ async function updateServerStatsForGuild(guild) {
 
       const nextName = getServerStatChannelName(SERVER_STAT_CHANNEL_LABELS[key], counts[key]);
       if (channel.name !== nextName) {
-        await channel.setName(nextName);
+        try {
+          await channel.setName(nextName);
+        } catch (err) {
+          console.error(`[ServerStats] Failed to rename channel ${channel.id} in guild ${guild.id}:`, err.message);
+        }
       }
     }),
   );
@@ -2644,21 +2593,22 @@ async function handleServerStat(message) {
 
     await category.setPosition(0);
 
-    const existingChannels = getServerStatVoiceChannels(message.guild, category.id);
+    const counts = await getAccurateMemberCounts(message.guild);
+    const existingChannels = getServerStatChannels(message.guild, category.id);
     const definitions = ['totalMembers', 'userMembers', 'botMembers', 'boosts'];
 
     for (const key of definitions) {
       if (!existingChannels[key]) {
         await message.guild.channels.create({
-          name: getServerStatChannelName(SERVER_STAT_CHANNEL_LABELS[key], 0),
+          name: getServerStatChannelName(SERVER_STAT_CHANNEL_LABELS[key], counts[key]),
           type: ChannelType.GuildVoice,
           parent: category.id,
         });
       }
     }
 
-    await updateServerStatsForGuild(message.guild);
-    await message.reply('Server statistics channels are now set up and will update automatically.');
+    await updateServerStatChannels(message.guild);
+    await message.reply('✅ Server statistics channels are set up and will update in real-time.');
   } catch (err) {
     console.error('[ServerStat] Setup error:', err.message);
     await message.reply(`I could not create the server statistics channels: ${err.message}`);
@@ -2931,21 +2881,15 @@ client.on(Events.GuildCreate, async (guild) => {
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
-  updateServerStatSnapshotForMember(member, 1);
-  scheduleServerStatsUpdate(member.guild);
+  scheduleStatUpdate(member.guild);
 });
 
 client.on(Events.GuildMemberRemove, async (member) => {
-  updateServerStatSnapshotForMember(member, -1);
-  scheduleServerStatsUpdate(member.guild);
-});
-
-client.on(Events.GuildMemberUpdate, async (_, newMember) => {
-  scheduleServerStatsUpdate(newMember.guild);
+  scheduleStatUpdate(member.guild);
 });
 
 client.on(Events.GuildUpdate, async (_, newGuild) => {
-  scheduleServerStatsUpdate(newGuild);
+  scheduleStatUpdate(newGuild);
 });
 
 client.on('error', (err) => {
